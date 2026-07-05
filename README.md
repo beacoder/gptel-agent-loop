@@ -86,14 +86,19 @@ Log agent loop actions to *Messages* buffer.
 ## Examples
 
 ```el
-;; Auto-activate in your emacs/init.el
-(add-hook 'gptel-after-change-hook #'gptel-agent-loop-mode)
-
-;; Include as llm context
-(require 'gptel-context)
-(gptel-add-file
- (expand-file-name "task-completion-rules.md"
-                   (file-name-directory (or load-file-name buffer-file-name))))
+(use-package gptel-agent
+  :ensure t
+  :config
+  (progn
+    (gptel-agent-update)
+    ;; add project related information as llm context, e.g: coding guideline, etc.
+    (require 'gptel-context)
+    (gptel-add-file
+    (expand-file-name "task-completion-rules.md"
+                      (file-name-directory (or load-file-name buffer-file-name))))
+    ;; improve gptel agent loop resilience
+    (require 'gptel-agent-loop)
+    (gptel-agent-loop-mode 1)))
 ```
 
 ## Requirements
