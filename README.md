@@ -67,6 +67,13 @@ Log agent loop actions to *Messages* buffer.
 (setq gptel-agent-loop-verbose t)
 ```
 
+### Include task-completion-rules.md as llm context
+
+```el
+(require 'gptel-context)
+(gptel-add-file (expand-file-name "task-completion-rules.md"))
+```
+
 ## How It Works
 
 1. When the agent would normally stop (reaching DONE or ERRS FSM states)
