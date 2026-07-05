@@ -1,7 +1,7 @@
 EMACS ?= emacs
 
 # A space-separated list of required package names
-DEPS = dash async
+DEPS = gptel
 
 INIT_PACKAGES="(progn \
   (require 'package) \
