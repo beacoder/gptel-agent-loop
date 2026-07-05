@@ -71,7 +71,9 @@ Log agent loop actions to *Messages* buffer.
 
 ```el
 (require 'gptel-context)
-(gptel-add-file (expand-file-name "task-completion-rules.md"))
+(gptel-add-file
+ (expand-file-name "task-completion-rules.md"
+                   (file-name-directory (or load-file-name buffer-file-name))))
 ```
 
 ## How It Works
@@ -94,13 +96,15 @@ Log agent loop actions to *Messages* buffer.
 
 ## Requirements
 
-- Emacs 26.1+
-- gptel package
+- Emacs 24.3+ (for `defvar-local`)
+- gptel package (>= 0.9.9.5)
+- compat package (>= 0.33.0, for `when-let*`)
+- nadvice package (>= 0.4, for `advice-remove`)
 
 ## Compatibility
 
-- Emacs: 26.1+
-- gptel: v1.6+
+- Emacs: 24.3+
+- gptel: 0.9.9.5+
 
 ## License
 
