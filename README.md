@@ -89,9 +89,11 @@ Log agent loop actions to *Messages* buffer.
 ;; Auto-activate in your emacs/init.el
 (add-hook 'gptel-after-change-hook #'gptel-agent-loop-mode)
 
-;; Custom nudge message
-(setq gptel-agent-loop-nudge-message
-      "Double-check that you've fully addressed the user's requirements before stopping. If anything is missing, continue with more tool calls.")
+;; Include as llm context
+(require 'gptel-context)
+(gptel-add-file
+ (expand-file-name "task-completion-rules.md"
+                   (file-name-directory (or load-file-name buffer-file-name))))
 ```
 
 ## Requirements
