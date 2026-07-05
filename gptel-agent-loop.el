@@ -5,7 +5,7 @@
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-loop
 ;; Package-Version: 0.1
-;; Package-Requires: ((emacs "26.1") (gptel))
+;; Package-Requires: ((emacs "27.1") (gptel "0.9.9.5))
 ;; Package-Author: Huming Chen
 ;; Package-Keywords: programming, convenience
 ;; Package-Description: Prevents gptel agent from stopping prematurely without confirming task completion
