@@ -109,6 +109,6 @@ Huming Chen (<chenhuming@gmail.com>)
 ## Package Information
 
 - **Version**: 0.1
-- **License**: MIT
+- **License**: GPL-3.0-or-later
 - **Keywords**: programming, convenience
 - **Maintainer**: Huming Chen (<chenhuming@gmail.com>)
