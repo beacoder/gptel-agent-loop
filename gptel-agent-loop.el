@@ -3,7 +3,7 @@
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
-;; Maintainer: Huming Chen <chenhuming@gmail.com>
+;; URL: https://github.com/beacoder/gptel-agent-loop
 ;; Package-Version: 0.1
 ;; Package-Requires: ((emacs "26.1") (gptel))
 ;; Package-Author: Huming Chen
