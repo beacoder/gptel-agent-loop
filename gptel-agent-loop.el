@@ -91,7 +91,7 @@ full history and decide whether to continue or stop."
               gptel-agent-loop-max-nudges)))))
 
 (defun gptel-agent-loop--should-intercept-p (fsm target-state)
-  "Return non-nil if transition to TARGET-STATE should be intercepted."
+  "For `FSM', return non-nil if transition to TARGET-STATE should be intercepted."
   (and (gptel-agent-loop--terminal-p target-state)
        (gptel-agent-loop--agentic-p fsm)
        (gptel-agent-loop--can-nudge-p fsm)))
@@ -114,7 +114,7 @@ full history and decide whether to continue or stop."
                gptel-agent-loop-max-nudges))))
 
 (defun gptel-agent-loop--reset-counter (fsm)
-  "Reset nudge counter — the LLM made tool calls (real progress)."
+  "For `FSM', reset nudge counter — the LLM made tool-calls (real progress)."
   (when-let* ((buf (plist-get (gptel-fsm-info fsm) :buffer)))
     (when (and (buffer-live-p buf)
                (with-current-buffer buf
@@ -130,7 +130,11 @@ full history and decide whether to continue or stop."
   "Around advice for `gptel--fsm-transition'.
 
 Intercepts terminal states and redirects to WAIT with a nudge.
-Resets counter when LLM makes tool calls."
+Resets counter when LLM makes tool calls.
+
+ORIG-FN is the original `gptel--fsm-transition' function.
+MACHINE is the FSM machine state.
+NEW-STATE is the optional new state to transition to."
   (let ((target (or new-state (gptel--fsm-next machine))))
     (cond
      ;; Intercept stop → nudge → WAIT
