@@ -22,6 +22,7 @@ jobs:
     strategy:
       matrix:
         emacs_version:
+          - 24.3
           - 29.3
           - snapshot
     steps:
