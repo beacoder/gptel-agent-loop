@@ -73,7 +73,9 @@ Log agent loop actions to *Messages* buffer.
 (require 'gptel-context)
 (gptel-add-file
  (expand-file-name "task-completion-rules.md"
-                   (file-name-directory (or load-file-name buffer-file-name))))
+                   (file-name-directory
+                    (or (locate-library "gptel-agent-loop")
+                        (error "gptel‑agent‑loop not found")))))
 ```
 
 ## How It Works
@@ -86,6 +88,8 @@ Log agent loop actions to *Messages* buffer.
 ## Examples
 
 ```el
+(use-package gptel-agent-loop :ensure t)
+
 (use-package gptel-agent
   :ensure t
   :config
@@ -94,8 +98,10 @@ Log agent loop actions to *Messages* buffer.
     ;; add project related information as llm context, e.g: coding guideline, etc.
     (require 'gptel-context)
     (gptel-add-file
-    (expand-file-name "task-completion-rules.md"
-                      (file-name-directory (or load-file-name buffer-file-name))))
+     (expand-file-name "task-completion-rules.md"
+                       (file-name-directory
+                        (or (locate-library "gptel-agent-loop")
+                            (error "gptel‑agent‑loop not found")))))
     ;; improve gptel agent loop resilience
     (require 'gptel-agent-loop)
     (gptel-agent-loop-mode 1)))
