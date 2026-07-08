@@ -4,7 +4,7 @@
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-loop
-;; Package-Version: 0.1
+;; Package-Version: 0.2
 ;; Package-Requires: ((emacs "24.3") (compat "0.33.0") (nadvice "0.4") (gptel "0.9.9.5"))
 ;; Package-Author: Huming Chen
 ;; Package-Keywords: programming, convenience
@@ -69,8 +69,24 @@ full history and decide whether to continue or stop."
 
 ;;;; Internal State
 
-(defvar-local gptel-agent-loop--nudge-count 0
-  "Consecutive nudges without the LLM making tool calls.")
+(defvar gptel-agent-loop--nudge-counts (make-hash-table :test 'eq :weakness 'key)
+  "Map from FSM to its nudge count.
+Uses weak keys so entries are GC'd when the FSM is collected.")
+
+;;;; Counter Access
+
+(defun gptel-agent-loop--get-count (fsm)
+  "Get nudge count for FSM."
+  (gethash fsm gptel-agent-loop--nudge-counts 0))
+
+(defun gptel-agent-loop--incf-count (fsm)
+  "Increment and return nudge count for FSM."
+  (puthash fsm (1+ (gptel-agent-loop--get-count fsm))
+           gptel-agent-loop--nudge-counts))
+
+(defun gptel-agent-loop--reset-count (fsm)
+  "Reset nudge count for FSM to 0."
+  (remhash fsm gptel-agent-loop--nudge-counts))
 
 ;;;; Predicates
 
@@ -84,11 +100,8 @@ full history and decide whether to continue or stop."
 
 (defun gptel-agent-loop--can-nudge-p (fsm)
   "Return non-nil if we have nudge budget remaining for FSM."
-  (when-let* ((buf (plist-get (gptel-fsm-info fsm) :buffer)))
-    (and (buffer-live-p buf)
-         (with-current-buffer buf
-           (< gptel-agent-loop--nudge-count
-              gptel-agent-loop-max-nudges)))))
+  (< (gptel-agent-loop--get-count fsm)
+     gptel-agent-loop-max-nudges))
 
 (defun gptel-agent-loop--should-intercept-p (fsm target-state)
   "For `FSM', return non-nil if transition to TARGET-STATE should be intercepted."
@@ -100,29 +113,23 @@ full history and decide whether to continue or stop."
 
 (defun gptel-agent-loop--nudge (fsm)
   "Inject nudge message into FSM prompt data and bump counter."
-  (let* ((info (gptel-fsm-info fsm))
-         (buf (plist-get info :buffer)))
-    (with-current-buffer buf
-      (cl-incf gptel-agent-loop--nudge-count))
+  (let* ((info (gptel-fsm-info fsm)))
+    (gptel-agent-loop--incf-count fsm)
     (gptel--inject-prompt
      (plist-get info :backend)
      (plist-get info :data)
      (list :role "user" :content gptel-agent-loop-nudge-message))
     (when gptel-agent-loop-verbose
       (message "gptel-agent-loop: nudge %d/%d — asking LLM to review task"
-               (with-current-buffer buf gptel-agent-loop--nudge-count)
+               (gptel-agent-loop--get-count fsm)
                gptel-agent-loop-max-nudges))))
 
 (defun gptel-agent-loop--reset-counter (fsm)
   "For `FSM', reset nudge counter — the LLM made tool-calls (real progress)."
-  (when-let* ((buf (plist-get (gptel-fsm-info fsm) :buffer)))
-    (when (and (buffer-live-p buf)
-               (with-current-buffer buf
-                 (> gptel-agent-loop--nudge-count 0)))
-      (when gptel-agent-loop-verbose
-        (message "gptel-agent-loop: tool calls made, resetting nudge counter"))
-      (with-current-buffer buf
-        (setq gptel-agent-loop--nudge-count 0)))))
+  (when (> (gptel-agent-loop--get-count fsm) 0)
+    (when gptel-agent-loop-verbose
+      (message "gptel-agent-loop: tool calls made, resetting nudge counter"))
+    (gptel-agent-loop--reset-count fsm)))
 
 ;;;; Advice
 
