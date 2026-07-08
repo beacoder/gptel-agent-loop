@@ -35,6 +35,10 @@
 ;;   (require 'gptel-agent-loop)
 ;;   (gptel-agent-loop-mode 1)
 
+;;; Change Log:
+;;
+;; 0.2 Skip gptel-agent-loop-max-nudges for subagent.
+
 ;;; Code:
 
 (require 'gptel)
@@ -69,24 +73,33 @@ full history and decide whether to continue or stop."
 
 ;;;; Internal State
 
-(defvar gptel-agent-loop--nudge-counts (make-hash-table :test 'eq :weakness 'key)
-  "Map from FSM to its nudge count.
-Uses weak keys so entries are GC'd when the FSM is collected.")
+(defvar-local gptel-agent-loop--nudge-count 0
+  "Nudge count for the current buffer's agentic session.")
 
 ;;;; Counter Access
 
+(defun gptel-agent-loop--buffer (fsm)
+  "Get the buffer associated with FSM."
+  (plist-get (gptel-fsm-info fsm) :buffer))
+
 (defun gptel-agent-loop--get-count (fsm)
-  "Get nudge count for FSM."
-  (gethash fsm gptel-agent-loop--nudge-counts 0))
+  "Get nudge count for FSM's buffer."
+  (let ((buf (gptel-agent-loop--buffer fsm)))
+    (if buf (buffer-local-value 'gptel-agent-loop--nudge-count buf) 0)))
 
 (defun gptel-agent-loop--incf-count (fsm)
-  "Increment and return nudge count for FSM."
-  (puthash fsm (1+ (gptel-agent-loop--get-count fsm))
-           gptel-agent-loop--nudge-counts))
+  "Increment and return nudge count for FSM's buffer."
+  (let ((buf (gptel-agent-loop--buffer fsm)))
+    (when buf
+      (with-current-buffer buf
+        (cl-incf gptel-agent-loop--nudge-count)))))
 
 (defun gptel-agent-loop--reset-count (fsm)
-  "Reset nudge count for FSM to 0."
-  (remhash fsm gptel-agent-loop--nudge-counts))
+  "Reset nudge count for FSM's buffer to 0."
+  (let ((buf (gptel-agent-loop--buffer fsm)))
+    (when buf
+      (with-current-buffer buf
+        (setq gptel-agent-loop--nudge-count 0)))))
 
 ;;;; Predicates
 
@@ -98,15 +111,22 @@ Uses weak keys so entries are GC'd when the FSM is collected.")
   "Return non-nil if FSM represents an agentic session (tools active)."
   (plist-get (gptel-fsm-info fsm) :tools))
 
+(defun gptel-agent-loop--top-level-p (fsm)
+  "Return non-nil if FSM is a top-level (user-initiated) session.
+Sub-agent FSMs use `gptel-agent-request--handlers' instead of
+`gptel-send--handlers'."
+  (eq (gptel-fsm-handlers fsm) gptel-send--handlers))
+
 (defun gptel-agent-loop--can-nudge-p (fsm)
   "Return non-nil if we have nudge budget remaining for FSM."
   (< (gptel-agent-loop--get-count fsm)
      gptel-agent-loop-max-nudges))
 
 (defun gptel-agent-loop--should-intercept-p (fsm target-state)
-  "For `FSM', return non-nil if transition to TARGET-STATE should be intercepted."
+  "For FSM, return non-nil if transition to TARGET-STATE should be intercepted."
   (and (gptel-agent-loop--terminal-p target-state)
        (gptel-agent-loop--agentic-p fsm)
+       (gptel-agent-loop--top-level-p fsm)
        (gptel-agent-loop--can-nudge-p fsm)))
 
 ;;;; Actions
@@ -148,8 +168,9 @@ NEW-STATE is the optional new state to transition to."
      ((gptel-agent-loop--should-intercept-p machine target)
       (gptel-agent-loop--nudge machine)
       (funcall orig-fn machine 'WAIT))
-     ;; LLM made tool calls → reset counter
-     ((memq target '(TOOL TPRE))
+     ;; Top-level LLM made tool calls → reset counter
+     ((and (memq target '(TOOL TPRE))
+           (gptel-agent-loop--top-level-p machine))
       (funcall orig-fn machine new-state)
       (gptel-agent-loop--reset-counter machine))
      ;; Everything else — pass through
