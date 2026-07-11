@@ -4,135 +4,235 @@
 
 ## Description
 
-Prevents gptel agent from stopping prematurely without confirming task completion. Intercepts terminal FSM states (DONE/ERRS) and asks the LLM to review the full conversation history before deciding to stop. Resets after every successful tool call.
+`gptel-agent-loop` improves the reliability of gptel agent sessions by preventing the agent from stopping prematurely before verifying task completion.
+
+It intercepts terminal FSM transitions (`DONE` / `ERRS`) for top-level agent sessions and asks the LLM to review the original request, task completion rules, and conversation history before allowing the session to finish.
+
+The nudge mechanism is conservative:
+
+* It only applies to top-level user-initiated agent sessions.
+* It does not interfere with sub-agent FSMs.
+* It stops nudging after a configurable number of attempts.
+* The nudge counter resets whenever the agent makes real progress through tool calls.
 
 ## Installation
 
-Add to your `.emacs.el` or initialize via Emacs package manager:
+Install through Emacs package manager:
 
-```el
+```elisp
 (package-install 'gptel-agent-loop)
 ```
 
-Or with straight:
+Or with `straight.el`:
 
-```el
+```elisp
 (straight-use-package 'gptel-agent-loop)
 ```
 
-Then enable the minor mode:
+Enable the mode:
 
-```el
+```elisp
 (require 'gptel-agent-loop)
 (gptel-agent-loop-mode 1)
 ```
 
 ## Usage
 
-- **Enable**: `(gptel-agent-loop-mode 1)`
-- **Disable**: `(gptel-agent-loop-mode 0)`
+Enable:
 
-The mode is global by default and activates automatically when you type `M-x gptel-agent-loop-mode`.
+```elisp
+(gptel-agent-loop-mode 1)
+```
+
+Disable:
+
+```elisp
+(gptel-agent-loop-mode 0)
+```
+
+The mode is global and installs an advice around gptel's FSM transition function.
 
 ## Configuration
 
 ### `gptel-agent-loop-max-nudges`
 
-Maximum consecutive nudges before allowing the agent to stop. The counter resets to 0 whenever the LLM makes a tool call (real progress).
+Maximum number of consecutive stop interceptions before allowing the agent to finish.
 
-**Default**: 2
+The counter is reset to zero whenever the top-level agent performs tool calls, which indicates real progress.
 
-```el
+Default:
+
+```elisp
+(setq gptel-agent-loop-max-nudges 2)
+```
+
+Example:
+
+```elisp
 (setq gptel-agent-loop-max-nudges 3)
 ```
 
 ### `gptel-agent-loop-nudge-message`
 
-Message injected when the LLM would stop. Appended as a user turn, instructing the LLM to review the full history and decide whether to continue or stop.
+Message injected when the agent attempts to stop.
 
-**Default**: "Review the original user request and the Task Completion Rules in the context. Verify whether all completion criteria are satisfied. If not, continue by making tool calls. Do not stop until the rules are fully met."
+The message is appended as a user turn and asks the LLM to verify whether the task is actually complete.
 
-```el
+Default:
+
+```elisp
 (setq gptel-agent-loop-nudge-message
-      "Review your previous response and task requirements. Are you confident you've fully completed the user's request? If yes, please acknowledge and we can stop. If no, please continue with additional tool calls.")
+      "Review the original user request and the Task Completion Rules in the context. Verify whether all completion criteria are satisfied. If not, continue by making tool calls. Do not stop until the rules are fully met.")
+```
+
+Custom example:
+
+```elisp
+(setq gptel-agent-loop-nudge-message
+      "Review your previous response against the user's requirements. If anything remains incomplete, continue working with tools. Only stop when the task is fully verified.")
 ```
 
 ### `gptel-agent-loop-verbose`
 
-Log agent loop actions to *Messages* buffer.
+Enable logging of agent-loop actions in the `*Messages*` buffer.
 
-**Default**: nil
+Default:
 
-```el
+```elisp
+(setq gptel-agent-loop-verbose nil)
+```
+
+Enable:
+
+```elisp
 (setq gptel-agent-loop-verbose t)
 ```
 
-### Include task-completion-rules.md as llm context
+## Task Completion Rules Context
 
-```el
+For best results, provide explicit completion criteria as context.
+
+Example:
+
+```elisp
 (require 'gptel-context)
+
 (gptel-add-file
  (expand-file-name "task-completion-rules.md"
                    (file-name-directory
                     (or (locate-library "gptel-agent-loop")
-                        (error "gptel‑agent‑loop not found")))))
+                        (error "gptel-agent-loop not found")))))
 ```
+
+A typical `task-completion-rules.md` may contain rules such as:
+
+* Do not stop until the original user goal is satisfied.
+* Verify generated files, commands, or external actions.
+* Use tools when verification is possible.
+* Check the final result before reporting completion.
 
 ## How It Works
 
-1. When the agent would normally stop (reaching DONE or ERRS FSM states)
-2. The package intercepts this and sends a "nudge" message asking the LLM to review the task
-3. The LLM can decide to continue by making tool calls or stop if fully confident
-4. The counter resets when the LLM makes any tool call (TOOL/TPRE states)
+The agent loop works by extending gptel's FSM behavior:
 
-## Examples
+1. The LLM finishes a response and gptel attempts to enter a terminal state:
 
-```el
-(use-package gptel-agent-loop :ensure t)
+   * `DONE`
+   * `ERRS`
 
+2. `gptel-agent-loop` checks whether:
+
+   * The FSM is an agentic session.
+   * The FSM is a top-level user session.
+   * The nudge limit has not been reached.
+
+3. If interception is allowed:
+
+   * The terminal transition is replaced with `WAIT`.
+   * A verification prompt is injected.
+   * The LLM gets another chance to continue using tools.
+
+4. If the LLM performs tool calls:
+
+   * The nudge counter is reset.
+   * Future stopping attempts are evaluated again.
+
+5. After the maximum number of nudges:
+
+   * The agent is allowed to stop normally.
+
+## Design Goals
+
+The package is designed around the principle:
+
+> The agent should not stop merely because it believes it is finished; it should stop after verifying completion.
+
+It improves agent reliability without forcing infinite loops:
+
+* No unconditional retry loop.
+* No interference with normal gptel conversations.
+* No interference with sub-agent execution.
+* Progress through tool usage is rewarded by resetting the stop guard.
+
+## Example Configuration
+
+```elisp
+(use-package gptel-agent-loop
+  :ensure t
+  :config
+  (setq gptel-agent-loop-max-nudges 3
+        gptel-agent-loop-verbose t)
+
+  (gptel-agent-loop-mode 1))
+```
+
+Example with gptel-agent:
+
+```elisp
 (use-package gptel-agent
   :ensure t
   :config
   (progn
     (gptel-agent-update)
-    ;; add project related information as llm context, e.g: coding guideline, etc.
+
+    ;; Add project-specific instructions.
     (require 'gptel-context)
     (gptel-add-file
      (expand-file-name "task-completion-rules.md"
                        (file-name-directory
                         (or (locate-library "gptel-agent-loop")
-                            (error "gptel‑agent‑loop not found")))))
-    ;; improve gptel agent loop resilience
+                            (error "gptel-agent-loop not found")))))
+
+    ;; Improve agent loop resilience.
     (require 'gptel-agent-loop)
     (gptel-agent-loop-mode 1)))
 ```
 
 ## Requirements
 
-- Emacs 24.3+ (for `defvar-local`)
-- gptel package (>= 0.9.9.5)
-- compat package (>= 0.33.0, for `when-let*`)
-- nadvice package (>= 0.4, for `advice-remove`)
+* Emacs 24.3+
+* gptel >= 0.9.9.5
+* compat >= 0.33.0
+* nadvice >= 0.4
 
 ## Compatibility
 
-- Emacs: 24.3+
-- gptel: 0.9.9.5+
+* Emacs: 24.3+
+* gptel: 0.9.9.5+
 
 ## License
 
-This program is free software; you can redistribute it and/or modify
-it under the terms of the MIT License.
+This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-See <https://opensource.org/licenses/MIT> for more details.
+See the `LICENSE` file for details.
 
 ## Author
 
-Huming Chen (<chenhuming@gmail.com>)
+Huming Chen ([chenhuming@gmail.com](mailto:chenhuming@gmail.com))
 
 ## Package Information
 
-- **Version**: 0.1
-- **License**: GPL-3.0-or-later
-- **Keywords**: programming, convenience
-- **Maintainer**: Huming Chen (<chenhuming@gmail.com>)
+* **Version**: 0.2
+* **License**: GPL-3.0-or-later
+* **Keywords**: programming, convenience
+* **Maintainer**: Huming Chen ([chenhuming@gmail.com](mailto:chenhuming@gmail.com))
