@@ -184,11 +184,7 @@ It improves agent reliability without forcing infinite loops:
         gptel-agent-loop-verbose t)
 
   (gptel-agent-loop-mode 1))
-```
 
-Example with gptel-agent:
-
-```elisp
 (use-package gptel-agent
   :ensure t
   :config
@@ -224,7 +220,7 @@ Example with gptel-agent:
 
 This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
 
-See the `LICENSE` file for details.
+See the `[LICENSE](LICENSE)` file for details.
 
 ## Author
 
