@@ -145,7 +145,7 @@ Sub-agent FSMs use `gptel-agent-request--handlers' instead of
                gptel-agent-loop-max-nudges))))
 
 (defun gptel-agent-loop--reset-counter (fsm)
-  "For `FSM', reset nudge counter — the LLM made tool-calls (real progress)."
+  "For FSM, reset nudge counter — the LLM made tool-calls (real progress)."
   (when (> (gptel-agent-loop--get-count fsm) 0)
     (when gptel-agent-loop-verbose
       (message "gptel-agent-loop: tool calls made, resetting nudge counter"))
