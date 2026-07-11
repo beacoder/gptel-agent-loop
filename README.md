@@ -177,13 +177,7 @@ It improves agent reliability without forcing infinite loops:
 ## Example Configuration
 
 ```elisp
-(use-package gptel-agent-loop
-  :ensure t
-  :config
-  (setq gptel-agent-loop-max-nudges 3
-        gptel-agent-loop-verbose t)
-
-  (gptel-agent-loop-mode 1))
+(use-package gptel-agent-loop :ensure t)
 
 (use-package gptel-agent
   :ensure t
