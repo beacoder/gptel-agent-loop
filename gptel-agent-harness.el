@@ -5,7 +5,7 @@
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;; Package-Version: 0.3
-;; Package-Requires: ((emacs "25.1") (compat "0.33.0") (nadvice "0.4") (gptel "0.9.9.5"))
+;; Package-Requires: ((emacs "25.1") (compat "0.33.0") (nadvice "0.4") (gptel-agent "0.0.1"))
 ;; Package-Author: Huming Chen
 ;; Package-Keywords: programming, convenience, ai, agent
 ;; Package-Description: Agent execution harness for gptel-agent.
