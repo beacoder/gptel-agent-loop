@@ -263,7 +263,7 @@ You can extend the table:
 
 ## Compaction Prompt
 
-The compaction prompt preserves:
+Copied compaction prompt from opencode, it preserves:
 
 * file paths,
 * identifiers,
