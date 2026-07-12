@@ -38,13 +38,16 @@
 ;;
 ;; 2. Context supervision:
 ;;
-;;    before LLM request
-;;          |
-;;          v
+;;    TOOL finished
+;;        |
+;;        v
+;;       WAIT
+;;        |
+;;        v
 ;;    context > threshold?
-;;          |
-;;          v
-;;       compact
+;;        |
+;;        v
+;;     compact
 ;;
 ;; Usage:
 ;;   (require 'gptel-agent-harness)
@@ -258,23 +261,16 @@ Uses:
            gptel-agent-harness-compact-prompt))
       (gptel-agent-compact))))
 
-(defun gptel-agent-harness--compact-if-needed ()
-  "Compact current context when required."
-  (when (and (not gptel-agent-harness--compacting)
+(defun gptel-agent-harness--compact-if-needed (fsm)
+  "Compact context for FSM when required."
+  (when (and (gptel-agent-harness--agentic-p fsm)
+             (gptel-agent-harness--top-level-p fsm)
+             (not gptel-agent-harness--compacting)
              (gptel-agent-harness--need-compaction-p))
     (setq gptel-agent-harness--compacting t)
     (unwind-protect
         (gptel-agent-harness--compact)
       (setq gptel-agent-harness--compacting nil))))
-
-;;;; Pre-request Hook
-(defun gptel-agent-harness--around-request (orig-fn &rest args)
-  "Compact before sending request to LLM.
-
-ORIG-FN is the original `gptel-request' function.
-ARGS is its args."
-  (gptel-agent-harness--compact-if-needed)
-  (apply orig-fn args))
 
 ;;;; FSM Supervisor
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
@@ -288,18 +284,18 @@ MACHINE is the FSM machine state.
 NEW-STATE is the optional new state to transition to."
   (let ((target (or new-state (gptel--fsm-next machine))))
     (cond
+     ;; Before next LLM turn
+     ((eq target 'WAIT)
+      (gptel-agent-harness--compact-if-needed machine)
+      (funcall orig-fn machine new-state))
      ;; LLM attempts to finish
      ((gptel-agent-harness--terminal-p target)
-      ;; last chance compaction check
-      (gptel-agent-harness--compact-if-needed)
       (if (and (gptel-agent-harness--agentic-p machine)
                (gptel-agent-harness--top-level-p machine)
                (gptel-agent-harness--can-nudge-p machine))
           (progn
             (gptel-agent-harness--nudge machine)
-            ;; continue FSM
             (funcall orig-fn machine 'WAIT))
-        ;; allow normal completion
         (funcall orig-fn machine new-state)))
      ;; Tool execution means real progress
      ((and (memq target '(TOOL TPRE))
@@ -321,19 +317,13 @@ Provides completion and context supervision."
   :lighter " AgentHarness"
   (if gptel-agent-harness-mode
       (progn
-        ;; Completion supervisor
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
-        ;; Context supervisor
-        (advice-add 'gptel-request
-                    :around #'gptel-agent-harness--around-request)
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
     ;; disable
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
-    (advice-remove 'gptel-request
-                   #'gptel-agent-harness--around-request)
     (when gptel-agent-harness-verbose
       (message "gptel-agent-harness disabled"))))
 
