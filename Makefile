@@ -1,7 +1,7 @@
 EMACS ?= emacs
 
 # A space-separated list of required package names
-DEPS = gptel
+DEPS = gptel-agent
 
 INIT_PACKAGES="(progn \
   (require 'package) \
