@@ -308,7 +308,7 @@ Configure with:
 
 # How It Works Internally
 
-The harness extends gptel execution through two advices.
+The harness extends gptel execution through one advice.
 
 ## FSM Transition Advice
 
@@ -356,22 +356,6 @@ TOOL / TPRE
       v
 reset nudge counter
 ```
-
----
-
-## Request Advice
-
-Intercepts:
-
-```
-gptel-request
-```
-
-Before sending a request:
-
-1. Estimate current context size.
-2. Compare against model context window.
-3. Trigger compaction if needed.
 
 ---
 
