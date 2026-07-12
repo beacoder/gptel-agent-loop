@@ -1,116 +1,291 @@
-# gptel-agent-loop.el
+# gptel-agent-harness
 
-[![MELPA](https://melpa.org/images/gptel-agent-loop.svg)](https://melpa.org/#/gptel-agent-loop)
+Agent execution harness for `gptel-agent`.
 
-## Description
+`gptel-agent-harness` improves the reliability of gptel agent sessions by providing two execution supervisors:
 
-`gptel-agent-loop` improves the reliability of gptel agent sessions by preventing the agent from stopping prematurely before verifying task completion.
+1. **Completion supervision**
 
-It intercepts terminal FSM transitions (`DONE` / `ERRS`) for top-level agent sessions and asks the LLM to review the original request, task completion rules, and conversation history before allowing the session to finish.
+   * Prevents agents from stopping prematurely.
+   * Intercepts terminal FSM transitions (`DONE` / `ERRS`).
+   * Asks the model to verify completion before allowing termination.
+   * Resets the stop guard when real progress happens through tool calls.
 
-The nudge mechanism is conservative:
+2. **Context supervision**
 
-* It only applies to top-level user-initiated agent sessions.
-* It does not interfere with sub-agent FSMs.
-* It stops nudging after a configurable number of attempts.
-* The nudge counter resets whenever the agent makes real progress through tool calls.
+   * Monitors estimated context usage before LLM requests.
+   * Automatically triggers context compaction when the context window exceeds a configurable threshold.
+   * Supports model-specific context window sizes.
+
+The goal is to make gptel agents behave more like reliable coding agents:
+
+> Continue working until completion is verified, and keep long-running sessions usable through automatic context management.
+
+---
 
 ## Installation
 
 Install through Emacs package manager:
 
 ```elisp
-(package-install 'gptel-agent-loop)
+(package-install 'gptel-agent-harness)
 ```
 
 Or with `straight.el`:
 
 ```elisp
-(straight-use-package 'gptel-agent-loop)
+(straight-use-package 'gptel-agent-harness)
 ```
 
 Enable the mode:
 
 ```elisp
-(require 'gptel-agent-loop)
-(gptel-agent-loop-mode 1)
+(require 'gptel-agent-harness)
+(gptel-agent-harness-mode 1)
 ```
 
-## Usage
+The mode is global and installs advice around gptel's FSM transition and request functions.
 
-Enable:
+---
 
-```elisp
-(gptel-agent-loop-mode 1)
+# Features
+
+## 1. Completion Supervision
+
+### Problem
+
+LLM agents often stop when they believe a task is finished, even when:
+
+* files were not verified,
+* tests were not executed,
+* requested changes are incomplete,
+* tool calls are still needed.
+
+`gptel-agent-harness` adds a lightweight completion guard.
+
+### Workflow
+
+```
+LLM finishes response
+        |
+        v
+gptel FSM enters DONE / ERRS
+        |
+        v
+completion check
+        |
+        +---- incomplete
+        |
+        v
+inject verification prompt
+        |
+        v
+continue agent execution
 ```
 
-Disable:
+The harness only applies this logic when:
 
-```elisp
-(gptel-agent-loop-mode 0)
+* the session is a top-level user agent session,
+* tools are enabled,
+* nudge attempts remain.
+
+Sub-agent FSMs are not modified.
+
+---
+
+## 2. Nudge Mechanism
+
+When the agent attempts to stop, the harness injects:
+
+```text
+Review the original user request and the Task Completion Rules in the context. Verify whether all completion criteria are satisfied. If not, continue by making tool calls. Do not stop until the rules are fully met.
 ```
 
-The mode is global and installs an advice around gptel's FSM transition function.
+The agent receives another chance to:
+
+* inspect files,
+* run commands,
+* verify results,
+* continue using tools.
+
+---
 
 ## Configuration
 
-### `gptel-agent-loop-max-nudges`
+## `gptel-agent-harness-max-nudges`
 
-Maximum number of consecutive stop interceptions before allowing the agent to finish.
-
-The counter is reset to zero whenever the top-level agent performs tool calls, which indicates real progress.
+Maximum consecutive completion checks.
 
 Default:
 
 ```elisp
-(setq gptel-agent-loop-max-nudges 2)
+(setq gptel-agent-harness-max-nudges 2)
 ```
 
 Example:
 
 ```elisp
-(setq gptel-agent-loop-max-nudges 3)
+(setq gptel-agent-harness-max-nudges 3)
 ```
 
-### `gptel-agent-loop-nudge-message`
+The counter resets whenever the agent performs tool calls:
 
-Message injected when the agent attempts to stop.
-
-The message is appended as a user turn and asks the LLM to verify whether the task is actually complete.
-
-Default:
-
-```elisp
-(setq gptel-agent-loop-nudge-message
-      "Review the original user request and the Task Completion Rules in the context. Verify whether all completion criteria are satisfied. If not, continue by making tool calls. Do not stop until the rules are fully met.")
+```
+tool execution
+      |
+      v
+reset nudge counter
 ```
 
-Custom example:
+This prevents unnecessary blocking after genuine progress.
+
+---
+
+## `gptel-agent-harness-nudge-message`
+
+Message injected when the agent tries to stop.
+
+Example:
 
 ```elisp
-(setq gptel-agent-loop-nudge-message
+(setq gptel-agent-harness-nudge-message
       "Review your previous response against the user's requirements. If anything remains incomplete, continue working with tools. Only stop when the task is fully verified.")
 ```
 
-### `gptel-agent-loop-verbose`
+---
 
-Enable logging of agent-loop actions in the `*Messages*` buffer.
+## `gptel-agent-harness-verbose`
+
+Enable logging.
 
 Default:
 
 ```elisp
-(setq gptel-agent-loop-verbose nil)
+(setq gptel-agent-harness-verbose nil)
 ```
 
 Enable:
 
 ```elisp
-(setq gptel-agent-loop-verbose t)
+(setq gptel-agent-harness-verbose t)
 ```
 
-## Task Completion Rules Context
+Example output:
 
-For best results, provide explicit completion criteria as context.
+```
+gptel-agent-harness: completion nudge 1/2 — asking LLM to review task
+```
+
+---
+
+# Context Supervision
+
+Long-running coding agents can exceed the model context window.
+
+`gptel-agent-harness` checks context size before every LLM request.
+
+Workflow:
+
+```
+before LLM request
+        |
+        v
+estimate context tokens
+        |
+        v
+usage > threshold?
+        |
+        +---- yes
+        |
+        v
+run compaction
+        |
+        v
+send request
+```
+
+---
+
+## Context Threshold
+
+### `gptel-agent-harness-context-trigger`
+
+Context usage ratio that triggers compaction.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-context-trigger 0.70)
+```
+
+Example:
+
+```elisp
+(setq gptel-agent-harness-context-trigger 0.80)
+```
+
+With the default value, compaction starts when estimated usage exceeds 70% of the model context window.
+
+---
+
+## Supported Context Windows
+
+Default model table:
+
+```elisp
+(setq gptel-agent-harness-context-windows
+      '(("gpt-5" . 400000)
+        ("gpt-5-mini" . 128000)
+        ("claude" . 200000)
+        ("deepseek-v3" . 128000)
+        ("deepseek-v4" . 1000000)
+        ("qwen3" . 131072)
+        ("qwen3.5" . 131072)
+        ("glm-5" . 128000)
+        ("kimi" . 128000)))
+```
+
+Unknown models use a safe fallback:
+
+```text
+32768 tokens
+```
+
+You can extend the table:
+
+```elisp
+(add-to-list
+ 'gptel-agent-harness-context-windows
+ '("my-model" . 200000))
+```
+
+---
+
+## Compaction Prompt
+
+The compaction prompt preserves:
+
+* file paths,
+* identifiers,
+* API names,
+* important decisions,
+* constraints,
+* previous summaries.
+
+It removes stale information and keeps only context required for continuing the task.
+
+Configure with:
+
+```elisp
+(setq gptel-agent-harness-compact-prompt
+      "Your custom compaction instructions...")
+```
+
+---
+
+# Task Completion Rules Context
+
+For best results, provide explicit completion rules through gptel context.
 
 Example:
 
@@ -119,110 +294,173 @@ Example:
 
 (gptel-add-file
  (expand-file-name "task-completion-rules.md"
-                   (file-name-directory
-                    (or (locate-library "gptel-agent-loop")
-                        (error "gptel-agent-loop not found")))))
+                   project-root))
 ```
 
-A typical `task-completion-rules.md` may contain rules such as:
+Example `task-completion-rules.md`:
 
-* Do not stop until the original user goal is satisfied.
-* Verify generated files, commands, or external actions.
-* Use tools when verification is possible.
-* Check the final result before reporting completion.
+```markdown
+- Do not stop until the original user goal is satisfied.
+- Verify generated files and commands.
+- Use tools whenever verification is possible.
+- Check the final result before reporting completion.
+```
 
-## How It Works
+---
 
-The agent loop works by extending gptel's FSM behavior:
-
-1. The LLM finishes a response and gptel attempts to enter a terminal state:
-
-   * `DONE`
-   * `ERRS`
-
-2. `gptel-agent-loop` checks whether:
-
-   * The FSM is an agentic session.
-   * The FSM is a top-level user session.
-   * The nudge limit has not been reached.
-
-3. If interception is allowed:
-
-   * The terminal transition is replaced with `WAIT`.
-   * A verification prompt is injected.
-   * The LLM gets another chance to continue using tools.
-
-4. If the LLM performs tool calls:
-
-   * The nudge counter is reset.
-   * Future stopping attempts are evaluated again.
-
-5. After the maximum number of nudges:
-
-   * The agent is allowed to stop normally.
-
-## Design Goals
-
-The package is designed around the principle:
-
-> The agent should not stop merely because it believes it is finished; it should stop after verifying completion.
-
-It improves agent reliability without forcing infinite loops:
-
-* No unconditional retry loop.
-* No interference with normal gptel conversations.
-* No interference with sub-agent execution.
-* Progress through tool usage is rewarded by resetting the stop guard.
-
-## Example Configuration
+# Example Configuration
 
 ```elisp
-(use-package gptel-agent-loop :ensure t)
-
-(use-package gptel-agent
+(use-package gptel-agent-harness
   :ensure t
   :config
-  (progn
-    (gptel-agent-update)
+  (setq gptel-agent-harness-max-nudges 3)
+  (setq gptel-agent-harness-context-trigger 0.75)
+  (setq gptel-agent-harness-verbose t)
 
-    ;; Add project-specific instructions.
-    (require 'gptel-context)
-    (gptel-add-file
-     (expand-file-name "task-completion-rules.md"
-                       (file-name-directory
-                        (or (locate-library "gptel-agent-loop")
-                            (error "gptel-agent-loop not found")))))
-
-    ;; Improve agent loop resilience.
-    (require 'gptel-agent-loop)
-    (gptel-agent-loop-mode 1)))
+  (gptel-agent-harness-mode 1))
 ```
 
-## Requirements
+---
 
-* Emacs 24.3+
+# How It Works Internally
+
+The harness extends gptel execution through two advices.
+
+## FSM Transition Advice
+
+Intercepts:
+
+```
+gptel--fsm-transition
+```
+
+Logic:
+
+1. Detect terminal states:
+
+```
+DONE
+ERRS
+```
+
+2. Check:
+
+* agent has tools,
+* session is top-level,
+* nudge budget remains.
+
+3. If allowed:
+
+```
+DONE
+ |
+ v
+WAIT
+ |
+ v
+inject verification prompt
+ |
+ v
+continue execution
+```
+
+4. When tool calls occur:
+
+```
+TOOL / TPRE
+      |
+      v
+reset nudge counter
+```
+
+---
+
+## Request Advice
+
+Intercepts:
+
+```
+gptel-request
+```
+
+Before sending a request:
+
+1. Estimate current context size.
+2. Compare against model context window.
+3. Trigger compaction if needed.
+
+---
+
+# Design Goals
+
+`gptel-agent-harness` follows three principles:
+
+## 1. Completion should be verified
+
+An agent should not stop simply because it believes it is finished.
+
+It should stop after:
+
+* checking results,
+* validating changes,
+* satisfying requirements.
+
+## 2. Progress should be rewarded
+
+Tool usage indicates real progress.
+
+Therefore:
+
+```
+tool call
+    |
+    v
+reset completion guard
+```
+
+## 3. Long sessions should remain usable
+
+Automatic compaction keeps long coding sessions within the model context window.
+
+---
+
+# Requirements
+
+* Emacs 25.1+
 * gptel >= 0.9.9.5
 * compat >= 0.33.0
 * nadvice >= 0.4
 
-## Compatibility
+---
 
-* Emacs: 24.3+
-* gptel: 0.9.9.5+
+# Compatibility
 
-## License
+Tested with:
 
-This program is free software; you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+* Emacs 25+
+* gptel 0.9.9.5+
 
-See the [LICENSE](LICENSE) file for details.
+---
 
-## Author
+# License
 
-Huming Chen ([chenhuming@gmail.com](mailto:chenhuming@gmail.com))
+GPL-3.0-or-later
 
-## Package Information
+---
 
-* **Version**: 0.2
-* **License**: GPL-3.0-or-later
-* **Keywords**: programming, convenience
-* **Maintainer**: Huming Chen ([chenhuming@gmail.com](mailto:chenhuming@gmail.com))
+# Author
+
+Huming Chen
+
+GitHub:
+
+https://github.com/beacoder/gptel-agent-harness
+
+---
+
+# Package Information
+
+* Version: 0.3
+* Keywords: programming, convenience, ai, agent
+* Description: Agent execution harness for gptel-agent.
