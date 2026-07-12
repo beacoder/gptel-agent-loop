@@ -135,13 +135,11 @@ Respond in the same language as the conversation."
   :type 'string)
 
 ;;;; Internal State
-(defvar-local
-    gptel-agent-harness--nudge-count 0
+(defvar-local gptel-agent-harness--nudge-count 0
   "Current completion nudge count.")
 
-(defvar-local
-    gptel-agent-harness--compacting nil
-  "Non-nil while context compaction is running.")
+(defvar-local gptel-agent-harness--resume-request ""
+  "Last user request.")
 
 ;;;; FSM Helpers
 (defun gptel-agent-harness--buffer (fsm)
@@ -243,34 +241,45 @@ Uses:
    (float (gptel-agent-harness--context-tokens))
    (float (gptel-agent-harness--context-window))))
 
-(defun gptel-agent-harness--need-compaction-p ()
-  "Return non-nil when compaction is needed."
-  (>
-   (gptel-agent-harness--context-ratio)
-   gptel-agent-harness-context-trigger))
+(defun gptel-agent-harness--need-compaction-p (fsm)
+  "Return non-nil when compaction is needed for FSM."
+  (and (gptel-agent-harness--agentic-p fsm)
+       (gptel-agent-harness--top-level-p fsm)
+       (> (gptel-agent-harness--context-ratio)
+          gptel-agent-harness-context-trigger)))
 
 ;;;; Automatic Compaction
-(defun gptel-agent-harness--compact ()
-  "Run context compaction."
-  (when (fboundp 'gptel-agent-compact)
-    (when gptel-agent-harness-verbose
-      (message
-       "gptel-agent-harness: compacting context %.1f%%"
-       (* 100 (gptel-agent-harness--context-ratio))))
-    (let ((gptel-agent-compact-prompt
-           gptel-agent-harness-compact-prompt))
-      (gptel-agent-compact))))
+(defun gptel-agent-harness--last-user-content (fsm)
+  "Return the last user message content for FSM."
+  (let* ((info (gptel-fsm-info fsm))
+         (data (plist-get info :data))
+         (messages (plist-get data :messages)))
+    (cl-loop for i downfrom (1- (length messages)) to 0
+             for msg = (aref messages i)
+             when (equal (plist-get msg :role) "user")
+             return (plist-get msg :content))))
 
-(defun gptel-agent-harness--compact-if-needed (fsm)
-  "Compact context for FSM when required."
-  (when (and (gptel-agent-harness--agentic-p fsm)
-             (gptel-agent-harness--top-level-p fsm)
-             (not gptel-agent-harness--compacting)
-             (gptel-agent-harness--need-compaction-p))
-    (setq gptel-agent-harness--compacting t)
-    (unwind-protect
-        (gptel-agent-harness--compact)
-      (setq gptel-agent-harness--compacting nil))))
+(defun gptel-agent-harness--resume-after-compact (&optional info)
+  "Resume agent execution after compaction with INFO."
+  (goto-char (point-max))
+  (insert "\n\n" gptel-agent-harness--resume-request)
+  (setq gptel-agent-harness--resume-request nil)
+  (gptel-send))
+
+(defun gptel-agent-harness--compact (fsm)
+  "Abort and run context compaction for FSM."
+  (when gptel-agent-harness-verbose
+    (message "gptel-agent-harness: compacting context %.1f%%"
+             (* 100 (gptel-agent-harness--context-ratio))))
+  ;; 1. Save unfinished task
+  (setq gptel-agent-harness--resume-request
+        (gptel-agent-harness--last-user-content fsm))
+  ;; 2. Stop old FSM
+  (gptel-abort (current-buffer))
+  ;; 3. Compact
+  (let ((gptel-agent-compact-prompt
+         gptel-agent-harness-compact-prompt))
+    (gptel-agent-compact nil #'gptel-agent-harness--resume-after-compact)))
 
 ;;;; FSM Supervisor
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
@@ -286,8 +295,9 @@ NEW-STATE is the optional new state to transition to."
     (cond
      ;; Before next LLM turn
      ((eq target 'WAIT)
-      (gptel-agent-harness--compact-if-needed machine)
-      (funcall orig-fn machine new-state))
+      (if (gptel-agent-harness--need-compaction-p machine)
+          (unwind-protect (gptel-agent-harness--compact machine))
+        (funcall orig-fn machine new-state)))
      ;; LLM attempts to finish
      ((gptel-agent-harness--terminal-p target)
       (if (and (gptel-agent-harness--agentic-p machine)
