@@ -314,11 +314,19 @@ Example `task-completion-rules.md`:
 (use-package gptel-agent-harness
   :ensure t
   :config
-  (setq gptel-agent-harness-max-nudges 3)
-  (setq gptel-agent-harness-context-trigger 0.75)
-  (setq gptel-agent-harness-verbose t)
-
-  (gptel-agent-harness-mode 1))
+  (progn
+    (setq gptel-agent-harness-max-nudges 3
+          gptel-agent-harness-context-trigger 0.75
+          gptel-agent-harness-verbose t)
+    (gptel-agent-harness-mode 1)
+    (require 'gptel-context)
+    ;; add task-completion-rules into llm context
+    (gptel-add-file
+     (expand-file-name
+      "task-completion-rules.md"
+      (file-name-directory
+       (or (locate-library "gptel-agent-harness")
+           (error "gptel‑agent‑harness not found")))))))
 ```
 
 ---
