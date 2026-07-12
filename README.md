@@ -283,31 +283,6 @@ Configure with:
 
 ---
 
-# Task Completion Rules Context
-
-For best results, provide explicit completion rules through gptel context.
-
-Example:
-
-```elisp
-(require 'gptel-context)
-
-(gptel-add-file
- (expand-file-name "task-completion-rules.md"
-                   project-root))
-```
-
-Example `task-completion-rules.md`:
-
-```markdown
-- Do not stop until the original user goal is satisfied.
-- Verify generated files and commands.
-- Use tools whenever verification is possible.
-- Check the final result before reporting completion.
-```
-
----
-
 # Example Configuration
 
 ```elisp
