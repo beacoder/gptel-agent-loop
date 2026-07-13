@@ -95,8 +95,9 @@ If not, continue by making tool calls. Do not stop until the rules are fully met
     ("deepseek-v4" . 1000000)
     ("qwen3\\.5" . 131072)
     ("qwen3" . 131072)
-    ("glm-5" . 128000)
-    ("kimi" . 128000))
+    ("glm-5.2" . 1000000)
+    ("glm-5.1" . 128000)
+    ("kimi-k2.7" . 256000))
   "Known model context window sizes.
 
 Entries are matched in order using `string-match-p', so place
