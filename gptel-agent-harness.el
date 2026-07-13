@@ -411,5 +411,124 @@ Provides completion and context supervision."
     (when gptel-agent-harness-verbose
       (message "gptel-agent-harness disabled"))))
 
+;;;; Tests (ERT)
+;; Run with:
+;;   emacs --batch -L ~/.emacs.d/elpa-30.1/compat-30.0.2.0/ \
+;;     -L ~/.emacs.d/elpa-30.1/gptel-20260709.305/ \
+;;     -L ~/.emacs.d/elpa-30.1/gptel-agent-20260628.830/ \
+;;     -L ~/.emacs.d/site-lisp/ \
+;;     -l gptel-agent-harness \
+;;     --eval '(ert-run-tests-batch "gptel-agent-harness-test")'
+(require 'ert)
+
+(ert-deftest gptel-agent-harness-test-cjk-char-p ()
+  "Test CJK character detection."
+  (should (gptel-agent-harness--cjk-char-p ?中))      ; CJK unified ideograph
+  (should (gptel-agent-harness--cjk-char-p ?あ))      ; Hiragana
+  (should (gptel-agent-harness--cjk-char-p ?Ａ))     ; Full-width Latin A (#xFF21)
+  (should-not (gptel-agent-harness--cjk-char-p ?A))   ; ASCII
+  (should-not (gptel-agent-harness--cjk-char-p ?é)))  ; Latin extended
+
+(ert-deftest gptel-agent-harness-test-terminal-p ()
+  "Test terminal state detection."
+  (should (gptel-agent-harness--terminal-p 'DONE))
+  (should (gptel-agent-harness--terminal-p 'ERRS))
+  (should-not (gptel-agent-harness--terminal-p 'WAIT))
+  (should-not (gptel-agent-harness--terminal-p 'TOOL))
+  (should-not (gptel-agent-harness--terminal-p nil)))
+
+(ert-deftest gptel-agent-harness-test-estimate-tokens ()
+  "Test token estimation for mixed content."
+  (with-temp-buffer
+    ;; Pure ASCII: 20 chars → ~5 tokens
+    (insert "abcdefghijklmnopqrst")
+    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 5)))
+  (with-temp-buffer
+    ;; Pure CJK: 4 chars → ~2 tokens
+    (insert "你好世界")
+    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 2)))
+  (with-temp-buffer
+    ;; Mixed: "hello   " (8 ASCII) + "你好世界" (4 CJK) = 8/4 + 4/2 = 2 + 2 = 4
+    (insert "hello   你好世界")
+    (should (= (gptel-agent-harness--estimate-tokens (point-min) (point-max)) 4))))
+
+(ert-deftest gptel-agent-harness-test-context-window ()
+  "Test model context window lookup."
+  (let ((gptel-model "claude-sonnet-4-20250514"))
+    (should (= (gptel-agent-harness--context-window) 200000)))
+  (let ((gptel-model "gpt-5-mini-2026"))
+    (should (= (gptel-agent-harness--context-window) 128000)))
+  (let ((gptel-model "unknown-model-xyz"))
+    (should (= (gptel-agent-harness--context-window) 32768))))
+
+(ert-deftest gptel-agent-harness-test-model-name ()
+  "Test model name coercion."
+  (let ((gptel-model 'claude-sonnet))
+    (should (equal (gptel-agent-harness--model-name) "claude-sonnet")))
+  (let ((gptel-model "gpt-5"))
+    (should (equal (gptel-agent-harness--model-name) "gpt-5")))
+  (let ((gptel-model 42))
+    (should (equal (gptel-agent-harness--model-name) ""))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens ()
+  "Test context token estimation for whole buffer."
+  (with-temp-buffer
+    (insert "abcdefgh")  ; 8 ASCII chars → 8/4 = 2 tokens
+    (should (= (gptel-agent-harness--context-tokens) 2)))
+  (with-temp-buffer
+    (insert "你好世界测试加油")  ; 8 CJK chars → 8/2 = 4 tokens
+    (should (= (gptel-agent-harness--context-tokens) 4))))
+
+(ert-deftest gptel-agent-harness-test-context-ratio ()
+  "Test context usage ratio calculation."
+  (with-temp-buffer
+    ;; 400 ASCII chars → 100 tokens, window 32768 → ratio ~0.003
+    (insert (make-string 400 ?x))
+    (let ((gptel-model "unknown-model"))
+      (should (< (gptel-agent-harness--context-ratio) 0.01))))
+  (with-temp-buffer
+    ;; Larger content against a small window model
+    ;; 512000 ASCII chars → 128000 tokens, window 128000 → ratio ~1.0
+    (insert (make-string 512000 ?x))
+    (let ((gptel-model "gpt-5-mini"))
+      (should (> (gptel-agent-harness--context-ratio) 0.99)))))
+
+(ert-deftest gptel-agent-harness-test-nudge-counter ()
+  "Test nudge count increment, get, and reset via fake FSM."
+  (let ((buf (generate-new-buffer " *harness-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'gptel-agent-harness--buffer)
+                   (lambda (_fsm) buf)))
+          (let ((fake-fsm 'ignored))
+            ;; Initial count is 0
+            (should (= (gptel-agent-harness--get-nudges fake-fsm) 0))
+            ;; Increment
+            (gptel-agent-harness--inc-nudges fake-fsm)
+            (should (= (gptel-agent-harness--get-nudges fake-fsm) 1))
+            (gptel-agent-harness--inc-nudges fake-fsm)
+            (should (= (gptel-agent-harness--get-nudges fake-fsm) 2))
+            ;; Reset
+            (gptel-agent-harness--reset-nudges fake-fsm)
+            (should (= (gptel-agent-harness--get-nudges fake-fsm) 0))))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-can-nudge-p ()
+  "Test nudge budget check."
+  (let ((buf (generate-new-buffer " *harness-test*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'gptel-agent-harness--buffer)
+                   (lambda (_fsm) buf)))
+          (let ((fake-fsm 'ignored)
+                (gptel-agent-harness-max-nudges 2))
+            ;; 0 < 2 → can nudge
+            (should (gptel-agent-harness--can-nudge-p fake-fsm))
+            ;; 1 < 2 → can nudge
+            (gptel-agent-harness--inc-nudges fake-fsm)
+            (should (gptel-agent-harness--can-nudge-p fake-fsm))
+            ;; 2 = 2 → cannot nudge
+            (gptel-agent-harness--inc-nudges fake-fsm)
+            (should-not (gptel-agent-harness--can-nudge-p fake-fsm))))
+      (kill-buffer buf))))
+
 (provide 'gptel-agent-harness)
 ;;; gptel-agent-harness.el ends here
