@@ -288,6 +288,7 @@ serialized content to *gptel-agent-harness-debug*."
          for msg across messages
          for role = (plist-get msg :role)
          for content = (plist-get msg :content)
+         for tool-calls = (plist-get msg :tool_calls)
          do (erase-buffer)
          (cond
           ((stringp content)
@@ -300,6 +301,17 @@ serialized content to *gptel-agent-harness-debug*."
               ((plist-get part :arguments) (insert (plist-get part :arguments)))
               (t (insert (format "%S" part))))))
           (t (insert (format "%S" content))))
+         ;; Tool calls (assistant messages with function invocations)
+         (when tool-calls
+           (dolist (tc (if (vectorp tool-calls)
+                           (append tool-calls nil)
+                         tool-calls))
+             (let ((func (plist-get tc :function)))
+               (when func
+                 (let ((name (plist-get func :name))
+                       (args (plist-get func :arguments)))
+                   (when name (insert name "\n"))
+                   (when args (insert args "\n")))))))
          (cl-incf total
                   (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
          (when debug-buf
@@ -640,7 +652,7 @@ Provides completion and context supervision."
       (kill-buffer buf))))
 
 (ert-deftest gptel-agent-harness-test-context-tokens-from-data-nil-content ()
-  "Test token estimation handles nil content gracefully."
+  "Test token estimation handles nil content with tool_calls."
   (let ((buf (generate-new-buffer " *harness-test*"))
         (gptel-agent-harness-verbose nil))
     (unwind-protect
@@ -649,10 +661,18 @@ Provides completion and context supervision."
                                      :data (list :system ""
                                                  :messages (vector
                                                             (list :role "assistant"
-                                                                  :content nil)))))))
+                                                                  :content nil
+                                                                  :tool_calls
+                                                                  (vector
+                                                                   (list :type "function"
+                                                                         :id "call_123"
+                                                                         :function
+                                                                         (list :name "Skill"
+                                                                               :arguments "{\"skill\":\"test\"}"))))))))))
           ;; "" system = 0 tokens
-          ;; nil content → nil is a list, dolist over nil inserts nothing → 0 tokens
-          (should (= (gptel-agent-harness--context-tokens-from-data fake-fsm) 0)))
+          ;; nil content → 0 (dolist over nil)
+          ;; tool_calls: "Skill\n" + "{\"skill\":\"test\"}\n" = 6+1+16+1 = 24 chars → 24/4 = 6
+          (should (= (gptel-agent-harness--context-tokens-from-data fake-fsm) 6)))
       (kill-buffer buf))))
 
 (ert-deftest gptel-agent-harness-test-context-ratio-for-fsm ()
