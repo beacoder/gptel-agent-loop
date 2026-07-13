@@ -246,14 +246,82 @@ Uses:
               (/ (float cjk-count) 2.0)))))
 
 (defun gptel-agent-harness--context-tokens ()
-  "Return estimated context tokens."
+  "Return estimated context tokens from buffer text."
   (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
 
+(defun gptel-agent-harness--context-tokens-from-data (fsm)
+  "Estimate tokens from the full prompt payload of FSM.
+Includes system prompt, all user/assistant/tool messages.
+When `gptel-agent-harness-verbose' is non-nil, logs the
+serialized content to *gptel-agent-harness-debug*."
+  (let* ((info (gptel-fsm-info fsm))
+         (data (plist-get info :data))
+         (messages (plist-get data :messages))
+         (system (or (plist-get data :system)
+                     (plist-get data :system_instruction)
+                     ""))
+         (total 0)
+         (debug-buf (when gptel-agent-harness-verbose
+                      (get-buffer-create "*gptel-agent-harness-debug*"))))
+    (when debug-buf
+      (with-current-buffer debug-buf
+        (erase-buffer)
+        (insert "=== Context Token Estimation ===\n\n")))
+    (with-temp-buffer
+      ;; System prompt
+      (cond
+       ((stringp system) (insert system))
+       ((listp system)
+        (dolist (s system)
+          (insert (or (and (stringp s) s)
+                      (plist-get s :text)
+                      (format "%s" s))
+                  "\n"))))
+      (setq total (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
+      (when debug-buf
+        (let ((text (buffer-string)))
+          (with-current-buffer debug-buf
+            (insert "--- [system] ---\n" text "\n\n"))))
+      ;; All messages
+      (when messages
+        (cl-loop
+         for msg across messages
+         for role = (plist-get msg :role)
+         for content = (plist-get msg :content)
+         do (erase-buffer)
+         (cond
+          ((stringp content)
+           (insert content))
+          ((listp content)
+           (dolist (part content)
+             (cond
+              ((stringp part) (insert part))
+              ((plist-get part :text) (insert (plist-get part :text)))
+              ((plist-get part :arguments) (insert (plist-get part :arguments)))
+              (t (insert (format "%S" part))))))
+          (t (insert (format "%S" content))))
+         (cl-incf total
+                  (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
+         (when debug-buf
+           (let ((text (buffer-string)))
+             (with-current-buffer debug-buf
+               (insert (format "--- [%s] ---\n%s\n\n" role text))))))))
+    (when debug-buf
+      (with-current-buffer debug-buf
+        (insert (format "=== Total estimated tokens: %d ===\n" total)))
+      (message "gptel-agent-harness: token estimation logged to *gptel-agent-harness-debug*"))
+    total))
+
 (defun gptel-agent-harness--context-ratio ()
-  "Return context usage ratio."
+  "Return context usage ratio from buffer text."
   (/
    (float (gptel-agent-harness--context-tokens))
    (float (gptel-agent-harness--context-window))))
+
+(defun gptel-agent-harness--context-ratio-for-fsm (fsm)
+  "Return context usage ratio based on full prompt payload of FSM."
+  (/ (float (gptel-agent-harness--context-tokens-from-data fsm))
+     (float (gptel-agent-harness--context-window))))
 
 (defun gptel-agent-harness--need-compaction-p (fsm)
   "Return non-nil when compaction is needed for FSM."
@@ -262,10 +330,9 @@ Uses:
          (buffer-live-p buf)
          (gptel-agent-harness--agentic-p fsm)
          (gptel-agent-harness--top-level-p fsm)
-         (with-current-buffer buf
-           (and (not gptel-agent-harness--compacting-p)
-                (> (gptel-agent-harness--context-ratio)
-                   gptel-agent-harness-context-trigger))))))
+         (not (buffer-local-value 'gptel-agent-harness--compacting-p buf))
+         (> (gptel-agent-harness--context-ratio-for-fsm fsm)
+            gptel-agent-harness-context-trigger))))
 
 ;;;; Automatic Compaction
 (defcustom gptel-agent-harness-compact-separator
@@ -317,7 +384,7 @@ Return non-nil if compaction was initiated, nil otherwise."
         (setq gptel-agent-harness--compacting-p t)
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness: compacting context %.1f%%"
-                   (* 100 (gptel-agent-harness--context-ratio))))
+                   (* 100 (gptel-agent-harness--context-ratio-for-fsm fsm))))
         ;; 2. Stop old FSM
         (gptel-abort buf)
         ;; 3. Compact with closure capturing per-buffer state
@@ -528,6 +595,80 @@ Provides completion and context supervision."
             ;; 2 = 2 → cannot nudge
             (gptel-agent-harness--inc-nudges fake-fsm)
             (should-not (gptel-agent-harness--can-nudge-p fake-fsm))))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-from-data ()
+  "Test token estimation from full prompt payload."
+  (let ((buf (generate-new-buffer " *harness-test*"))
+        (gptel-agent-harness-verbose nil))
+    (unwind-protect
+        (let ((fake-fsm (gptel-make-fsm
+                         :info (list :buffer buf
+                                     :data (list :system "system prompt here"
+                                                 :messages (vector
+                                                            (list :role "user"
+                                                                  :content "hello world")
+                                                            (list :role "assistant"
+                                                                  :content "hi there")
+                                                            (list :role "user"
+                                                                  :content "do something")))))))
+          ;; "system prompt here" = 18 chars → 18/4 = 4.5 → round = 4
+          ;; "hello world" = 11 chars → 11/4 = 2.75 → round = 3
+          ;; "hi there" = 8 chars → 8/4 = 2
+          ;; "do something" = 12 chars → 12/4 = 3
+          ;; Total = 4 + 3 + 2 + 3 = 12
+          (should (= (gptel-agent-harness--context-tokens-from-data fake-fsm) 12)))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-from-data-with-list-content ()
+  "Test token estimation with structured (list) content in messages."
+  (let ((buf (generate-new-buffer " *harness-test*"))
+        (gptel-agent-harness-verbose nil))
+    (unwind-protect
+        (let ((fake-fsm (gptel-make-fsm
+                         :info (list :buffer buf
+                                     :data (list :system "sys"
+                                                 :messages (vector
+                                                            (list :role "assistant"
+                                                                  :content
+                                                                  (list (list :text "part one")
+                                                                        (list :text "part two")))))))))
+          ;; "sys" = 3 chars → 3/4 = 0.75 → round = 1
+          ;; "part onepart two" = 16 chars → 16/4 = 4
+          ;; Total = 1 + 4 = 5
+          (should (= (gptel-agent-harness--context-tokens-from-data fake-fsm) 5)))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-from-data-nil-content ()
+  "Test token estimation handles nil content gracefully."
+  (let ((buf (generate-new-buffer " *harness-test*"))
+        (gptel-agent-harness-verbose nil))
+    (unwind-protect
+        (let ((fake-fsm (gptel-make-fsm
+                         :info (list :buffer buf
+                                     :data (list :system ""
+                                                 :messages (vector
+                                                            (list :role "assistant"
+                                                                  :content nil)))))))
+          ;; "" system = 0 tokens
+          ;; nil content → nil is a list, dolist over nil inserts nothing → 0 tokens
+          (should (= (gptel-agent-harness--context-tokens-from-data fake-fsm) 0)))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-context-ratio-for-fsm ()
+  "Test FSM-based context ratio calculation."
+  (let ((buf (generate-new-buffer " *harness-test*"))
+        (gptel-agent-harness-verbose nil)
+        (gptel-model "unknown-model"))  ; window = 32768
+    (unwind-protect
+        (let ((fake-fsm (gptel-make-fsm
+                         :info (list :buffer buf
+                                     :data (list :system (make-string 40000 ?x)
+                                                 :messages (vector))))))
+          ;; 40000 ASCII chars → 10000 tokens, window 32768 → ratio ~0.305
+          (let ((ratio (gptel-agent-harness--context-ratio-for-fsm fake-fsm)))
+            (should (> ratio 0.3))
+            (should (< ratio 0.31))))
       (kill-buffer buf))))
 
 (provide 'gptel-agent-harness)
