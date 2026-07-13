@@ -56,7 +56,7 @@
 ;;; Code:
 
 (require 'gptel-agent)
-(eval-when-compile (require 'cl-lib))
+(require 'cl-lib)
 
 ;;;; User Options
 (defgroup gptel-agent-harness nil
@@ -88,16 +88,19 @@ If not, continue by making tool calls. Do not stop until the rules are fully met
   :type 'float)
 
 (defcustom gptel-agent-harness-context-windows
-  '(("gpt-5" . 400000)
-    ("gpt-5-mini" . 128000)
+  '(("gpt-5-mini" . 128000)
+    ("gpt-5" . 400000)
     ("claude" . 200000)
     ("deepseek-v3" . 128000)
     ("deepseek-v4" . 1000000)
+    ("qwen3\\.5" . 131072)
     ("qwen3" . 131072)
-    ("qwen3.5" . 131072)
     ("glm-5" . 128000)
     ("kimi" . 128000))
-  "Known model context window sizes."
+  "Known model context window sizes.
+
+Entries are matched in order using `string-match-p', so place
+more specific patterns before general ones."
   :type '(alist
           :key-type string
           :value-type integer))
@@ -138,8 +141,8 @@ Respond in the same language as the conversation."
 (defvar-local gptel-agent-harness--nudge-count 0
   "Current completion nudge count.")
 
-(defvar-local gptel-agent-harness--resume-request ""
-  "Last user request.")
+(defvar-local gptel-agent-harness--compacting-p nil
+  "Non-nil when compaction is in progress for this buffer.")
 
 ;;;; FSM Helpers
 (defun gptel-agent-harness--buffer (fsm)
@@ -149,19 +152,21 @@ Respond in the same language as the conversation."
 (defun gptel-agent-harness--get-nudges (fsm)
   "Return current nudge count for FSM's buffer."
   (let ((buf (gptel-agent-harness--buffer fsm)))
-    (if buf (buffer-local-value 'gptel-agent-harness--nudge-count buf) 0)))
+    (if (and buf (buffer-live-p buf))
+        (buffer-local-value 'gptel-agent-harness--nudge-count buf)
+      0)))
 
 (defun gptel-agent-harness--inc-nudges (fsm)
   "Increment and return nudge count for FSM's buffer."
   (let ((buf (gptel-agent-harness--buffer fsm)))
-    (when buf
+    (when (and buf (buffer-live-p buf))
       (with-current-buffer buf
         (cl-incf gptel-agent-harness--nudge-count)))))
 
 (defun gptel-agent-harness--reset-nudges (fsm)
   "Reset nudge count for FSM's buffer to 0."
   (let ((buf (gptel-agent-harness--buffer fsm)))
-    (when buf
+    (when (and buf (buffer-live-p buf))
       (with-current-buffer buf
         (setq gptel-agent-harness--nudge-count 0)))))
 
@@ -217,19 +222,26 @@ Sub-agent FSMs use `gptel-agent-request--handlers' instead of
      ;; safe fallback
      32768)))
 
+(defun gptel-agent-harness--cjk-char-p (c)
+  "Return non-nil if C is a CJK or full-width character."
+  (or (and (>= c #x3000) (<= c #x9fff))    ; CJK + kana + punctuation
+      (and (>= c #xf900) (<= c #xfaff))    ; CJK compat ideographs
+      (and (>= c #xff00) (<= c #xffef))    ; full-width forms
+      (and (>= c #x20000) (<= c #x2fa1f)))) ; CJK extensions B–F
+
 (defun gptel-agent-harness--estimate-tokens (start end)
   "Estimate tokens between START and END.
 Uses:
 - Latin: ~4 chars/token
-- CJK: ~2 chars/token"
+- CJK/full-width: ~2 chars/token"
   (let* ((text (buffer-substring-no-properties start end))
          (len (length text))
          (cjk-count 0))
     (dotimes (i len)
-      (let ((c (aref text i)))
-        (when (and (>= c #x4e00) (<= c #x9fff))
-          (setq cjk-count (1+ cjk-count)))))
-    (+ (/ (- len cjk-count) 4) (/ cjk-count 2))))
+      (when (gptel-agent-harness--cjk-char-p (aref text i))
+        (setq cjk-count (1+ cjk-count))))
+    (round (+ (/ (float (- len cjk-count)) 4.0)
+              (/ (float cjk-count) 2.0)))))
 
 (defun gptel-agent-harness--context-tokens ()
   "Return estimated context tokens."
@@ -243,10 +255,15 @@ Uses:
 
 (defun gptel-agent-harness--need-compaction-p (fsm)
   "Return non-nil when compaction is needed for FSM."
-  (and (gptel-agent-harness--agentic-p fsm)
-       (gptel-agent-harness--top-level-p fsm)
-       (> (gptel-agent-harness--context-ratio)
-          gptel-agent-harness-context-trigger)))
+  (let ((buf (gptel-agent-harness--buffer fsm)))
+    (and buf
+         (buffer-live-p buf)
+         (gptel-agent-harness--agentic-p fsm)
+         (gptel-agent-harness--top-level-p fsm)
+         (with-current-buffer buf
+           (and (not gptel-agent-harness--compacting-p)
+                (> (gptel-agent-harness--context-ratio)
+                   gptel-agent-harness-context-trigger))))))
 
 ;;;; Automatic Compaction
 (defun gptel-agent-harness--last-user-content (fsm)
@@ -259,27 +276,55 @@ Uses:
              when (equal (plist-get msg :role) "user")
              return (plist-get msg :content))))
 
-(defun gptel-agent-harness--resume-after-compact (&optional info)
-  "Resume agent execution after compaction with INFO."
-  (goto-char (point-max))
-  (insert "\n\n" gptel-agent-harness--resume-request)
-  (setq gptel-agent-harness--resume-request nil)
-  (gptel-send))
-
-(defun gptel-agent-harness--compact (fsm)
-  "Abort and run context compaction for FSM."
-  (when gptel-agent-harness-verbose
-    (message "gptel-agent-harness: compacting context %.1f%%"
-             (* 100 (gptel-agent-harness--context-ratio))))
-  ;; 1. Save unfinished task
-  (setq gptel-agent-harness--resume-request
-        (gptel-agent-harness--last-user-content fsm))
-  ;; 2. Stop old FSM
-  (gptel-abort (current-buffer))
-  ;; 3. Compact
-  (let ((gptel-agent-compact-prompt
-         gptel-agent-harness-compact-prompt))
-    (gptel-agent-compact nil #'gptel-agent-harness--resume-after-compact)))
+(cl-defun gptel-agent-harness--compact (fsm)
+  "Abort and run context compaction for FSM.
+Return non-nil if compaction was initiated, nil otherwise."
+  (let ((buf (gptel-agent-harness--buffer fsm)))
+    (unless (and buf (buffer-live-p buf))
+      (when gptel-agent-harness-verbose
+        (message "gptel-agent-harness: compact skipped — buffer not live"))
+      (cl-return-from gptel-agent-harness--compact nil))
+    (with-current-buffer buf
+      ;; 1. Save unfinished task
+      (let ((request (gptel-agent-harness--last-user-content fsm)))
+        (unless request
+          (when gptel-agent-harness-verbose
+            (message "gptel-agent-harness: compact skipped — no user request to resume"))
+          (cl-return-from gptel-agent-harness--compact nil))
+        (setq gptel-agent-harness--compacting-p t)
+        (when gptel-agent-harness-verbose
+          (message "gptel-agent-harness: compacting context %.1f%%"
+                   (* 100 (gptel-agent-harness--context-ratio))))
+        ;; 2. Stop old FSM
+        (gptel-abort buf)
+        ;; 3. Compact with closure capturing per-buffer state
+        (let ((resume-buf buf)
+              (resume-req request)
+              (gptel-agent-compact-prompt
+               gptel-agent-harness-compact-prompt))
+          (condition-case err
+              (gptel-agent-compact
+               nil
+               (lambda (&optional _info)
+                 (when (and resume-req resume-buf (buffer-live-p resume-buf))
+                   (with-current-buffer resume-buf
+                     (setq gptel-agent-harness--compacting-p nil)
+                     (condition-case err
+                         (progn
+                           (goto-char (point-max))
+                           (insert "\n\n" resume-req)
+                           (gptel-send))
+                       (error
+                        (when gptel-agent-harness-verbose
+                          (message "gptel-agent-harness: resume failed — %s"
+                                   (error-message-string err)))))))))
+            (error
+             (setq gptel-agent-harness--compacting-p nil)
+             (when gptel-agent-harness-verbose
+               (message "gptel-agent-harness: gptel-agent-compact failed — %s"
+                        (error-message-string err)))
+             (cl-return-from gptel-agent-harness--compact nil))))
+        t))))
 
 ;;;; FSM Supervisor
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
@@ -293,10 +338,12 @@ MACHINE is the FSM machine state.
 NEW-STATE is the optional new state to transition to."
   (let ((target (or new-state (gptel--fsm-next machine))))
     (cond
-     ;; Before next LLM turn
+     ;; Before next LLM turn — check if compaction needed
      ((eq target 'WAIT)
       (if (gptel-agent-harness--need-compaction-p machine)
-          (unwind-protect (gptel-agent-harness--compact machine))
+          ;; If compact bails out, fall through to normal transition
+          (unless (gptel-agent-harness--compact machine)
+            (funcall orig-fn machine new-state))
         (funcall orig-fn machine new-state)))
      ;; LLM attempts to finish
      ((gptel-agent-harness--terminal-p target)
