@@ -268,15 +268,36 @@ Uses:
                    gptel-agent-harness-context-trigger))))))
 
 ;;;; Automatic Compaction
-(defun gptel-agent-harness--last-user-content (fsm)
-  "Return the last user message content for FSM."
+(defcustom gptel-agent-harness-compact-separator
+  "\n\n---\n\n**[Context compacted]**\n\n---\n\n"
+  "Separator inserted after compaction to visually indicate the boundary."
+  :type 'string
+  :group 'gptel-agent-harness)
+
+(defcustom gptel-agent-harness-compact-resume-count 3
+  "Number of recent user requests to replay after compaction.
+Only non-nudge user messages are counted."
+  :type 'integer
+  :group 'gptel-agent-harness)
+
+(defun gptel-agent-harness--recent-user-requests (fsm)
+  "Return the last N user messages from FSM, excluding nudge messages.
+N is `gptel-agent-harness-compact-resume-count'.
+Returns a list of content strings in chronological order."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
-         (messages (plist-get data :messages)))
+         (messages (plist-get data :messages))
+         (nudge gptel-agent-harness-nudge-message)
+         (n gptel-agent-harness-compact-resume-count)
+         result)
+    ;; Collect from end to get the most recent ones
     (cl-loop for i downfrom (1- (length messages)) to 0
              for msg = (aref messages i)
-             when (equal (plist-get msg :role) "user")
-             return (plist-get msg :content))))
+             while (< (length result) n)
+             when (and (equal (plist-get msg :role) "user")
+                       (not (equal (plist-get msg :content) nudge)))
+             do (push msg result))
+    (mapcar (lambda (msg) (plist-get msg :content)) result)))
 
 (cl-defun gptel-agent-harness--compact (fsm)
   "Abort and run context compaction for FSM.
@@ -287,11 +308,11 @@ Return non-nil if compaction was initiated, nil otherwise."
         (message "gptel-agent-harness: compact skipped — buffer not live"))
       (cl-return-from gptel-agent-harness--compact nil))
     (with-current-buffer buf
-      ;; 1. Save unfinished task
-      (let ((request (gptel-agent-harness--last-user-content fsm)))
-        (unless request
+      ;; 1. Save recent user requests (excluding nudges)
+      (let ((requests (gptel-agent-harness--recent-user-requests fsm)))
+        (unless requests
           (when gptel-agent-harness-verbose
-            (message "gptel-agent-harness: compact skipped — no user request to resume"))
+            (message "gptel-agent-harness: compact skipped — no user requests to resume"))
           (cl-return-from gptel-agent-harness--compact nil))
         (setq gptel-agent-harness--compacting-p t)
         (when gptel-agent-harness-verbose
@@ -301,20 +322,24 @@ Return non-nil if compaction was initiated, nil otherwise."
         (gptel-abort buf)
         ;; 3. Compact with closure capturing per-buffer state
         (let ((resume-buf buf)
-              (resume-req request)
+              (resume-requests requests)
               (gptel-agent-compact-prompt
                gptel-agent-harness-compact-prompt))
           (condition-case err
               (gptel-agent-compact
                nil
                (lambda (&optional _info)
-                 (when (and resume-req resume-buf (buffer-live-p resume-buf))
+                 (when (and resume-requests resume-buf (buffer-live-p resume-buf))
                    (with-current-buffer resume-buf
                      (setq gptel-agent-harness--compacting-p nil)
+                     (setq gptel-agent-harness--nudge-count 0)
                      (condition-case err
                          (progn
                            (goto-char (point-max))
-                           (insert "\n\n" resume-req)
+                           ;; Visual separator
+                           (insert gptel-agent-harness-compact-separator)
+                           ;; Re-insert recent user requests in order
+                           (insert (mapconcat #'identity resume-requests "\n\n"))
                            (gptel-send))
                        (error
                         (when gptel-agent-harness-verbose
