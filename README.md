@@ -401,33 +401,8 @@ Automatic compaction keeps long coding sessions within the model context window.
 
 ---
 
-# Compatibility
-
-Tested with:
-
-* Emacs 25+
-* gptel 0.9.9.5+
-
----
-
 # License
 
 GPL-3.0-or-later
 
 ---
-
-# Author
-
-Huming Chen
-
-GitHub:
-
-https://github.com/beacoder/gptel-agent-harness
-
----
-
-# Package Information
-
-* Version: 0.3
-* Keywords: programming, convenience, ai, agent
-* Description: Agent execution harness for gptel-agent.
