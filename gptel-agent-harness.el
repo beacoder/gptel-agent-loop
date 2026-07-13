@@ -245,10 +245,6 @@ Uses:
     (round (+ (/ (float (- len cjk-count)) 4.0)
               (/ (float cjk-count) 2.0)))))
 
-(defun gptel-agent-harness--context-tokens ()
-  "Return estimated context tokens from buffer text."
-  (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
-
 (defun gptel-agent-harness--context-tokens-from-data (fsm)
   "Estimate tokens from the full prompt payload of FSM.
 Includes system prompt, all user/assistant/tool messages.
@@ -323,12 +319,6 @@ serialized content to *gptel-agent-harness-debug*."
         (insert (format "=== Total estimated tokens: %d ===\n" total)))
       (message "gptel-agent-harness: token estimation logged to *gptel-agent-harness-debug*"))
     total))
-
-(defun gptel-agent-harness--context-ratio ()
-  "Return context usage ratio from buffer text."
-  (/
-   (float (gptel-agent-harness--context-tokens))
-   (float (gptel-agent-harness--context-window))))
 
 (defun gptel-agent-harness--context-ratio-for-fsm (fsm)
   "Return context usage ratio based on full prompt payload of FSM."
@@ -548,29 +538,6 @@ Provides completion and context supervision."
     (should (equal (gptel-agent-harness--model-name) "gpt-5")))
   (let ((gptel-model 42))
     (should (equal (gptel-agent-harness--model-name) ""))))
-
-(ert-deftest gptel-agent-harness-test-context-tokens ()
-  "Test context token estimation for whole buffer."
-  (with-temp-buffer
-    (insert "abcdefgh")  ; 8 ASCII chars → 8/4 = 2 tokens
-    (should (= (gptel-agent-harness--context-tokens) 2)))
-  (with-temp-buffer
-    (insert "你好世界测试加油")  ; 8 CJK chars → 8/2 = 4 tokens
-    (should (= (gptel-agent-harness--context-tokens) 4))))
-
-(ert-deftest gptel-agent-harness-test-context-ratio ()
-  "Test context usage ratio calculation."
-  (with-temp-buffer
-    ;; 400 ASCII chars → 100 tokens, window 32768 → ratio ~0.003
-    (insert (make-string 400 ?x))
-    (let ((gptel-model "unknown-model"))
-      (should (< (gptel-agent-harness--context-ratio) 0.01))))
-  (with-temp-buffer
-    ;; Larger content against a small window model
-    ;; 512000 ASCII chars → 128000 tokens, window 128000 → ratio ~1.0
-    (insert (make-string 512000 ?x))
-    (let ((gptel-model "gpt-5-mini"))
-      (should (> (gptel-agent-harness--context-ratio) 0.99)))))
 
 (ert-deftest gptel-agent-harness-test-nudge-counter ()
   "Test nudge count increment, get, and reset via fake FSM."
