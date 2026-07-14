@@ -32,3 +32,5 @@ jobs:
     - uses: actions/checkout@v2
     - name: Run tests
       run: make compile
+    - name: Run ERT tests
+      run: make test
