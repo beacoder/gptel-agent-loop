@@ -146,6 +146,9 @@ Respond in the same language as the conversation."
 (defvar-local gptel-agent-harness--compacting-p nil
   "Non-nil when compaction is in progress for this buffer.")
 
+(defvar-local gptel-agent-harness--context-ratio nil
+  "Last computed context usage ratio (0.0–1.0) for this buffer.")
+
 ;;;; FSM Helpers
 (defun gptel-agent-harness--buffer (fsm)
   "Return buffer associated with FSM."
@@ -326,15 +329,17 @@ serialized content to *gptel-agent-harness-debug*."
      (float (gptel-agent-harness--context-window))))
 
 (defun gptel-agent-harness--need-compaction-p (fsm)
-  "Return non-nil when compaction is needed for FSM."
+  "Return non-nil when compaction is needed for FSM.
+Uses the cached `gptel-agent-harness--context-ratio' if available."
   (let ((buf (gptel-agent-harness--buffer fsm)))
     (and buf
          (buffer-live-p buf)
          (gptel-agent-harness--agentic-p fsm)
          (gptel-agent-harness--top-level-p fsm)
          (not (buffer-local-value 'gptel-agent-harness--compacting-p buf))
-         (> (gptel-agent-harness--context-ratio-for-fsm fsm)
-            gptel-agent-harness-context-trigger))))
+         (let ((ratio (buffer-local-value 'gptel-agent-harness--context-ratio buf)))
+           (and ratio
+                (> ratio gptel-agent-harness-context-trigger))))))
 
 ;;;; Automatic Compaction
 (defcustom gptel-agent-harness-compact-separator
@@ -423,6 +428,18 @@ Return non-nil if compaction was initiated, nil otherwise."
         t))))
 
 ;;;; FSM Supervisor
+(defun gptel-agent-harness--update-context-ratio (fsm)
+  "Compute and store context ratio for FSM's buffer."
+  (let ((buf (gptel-agent-harness--buffer fsm)))
+    (when (and buf (buffer-live-p buf)
+               (gptel-agent-harness--top-level-p fsm)
+               ;; :data must be a plist (not a buffer during assembly)
+               (not (bufferp (plist-get (gptel-fsm-info fsm) :data))))
+      (let ((ratio (gptel-agent-harness--context-ratio-for-fsm fsm)))
+        (with-current-buffer buf
+          (setq gptel-agent-harness--context-ratio ratio)
+          (force-mode-line-update))))))
+
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
   "Around advice for `gptel--fsm-transition'.
 
@@ -436,6 +453,7 @@ NEW-STATE is the optional new state to transition to."
     (cond
      ;; Before next LLM turn — check if compaction needed
      ((eq target 'WAIT)
+      (gptel-agent-harness--update-context-ratio machine)
       (if (gptel-agent-harness--need-compaction-p machine)
           ;; If compact bails out, fall through to normal transition
           (unless (gptel-agent-harness--compact machine)
@@ -443,6 +461,7 @@ NEW-STATE is the optional new state to transition to."
         (funcall orig-fn machine new-state)))
      ;; LLM attempts to finish
      ((gptel-agent-harness--terminal-p target)
+      (gptel-agent-harness--update-context-ratio machine)
       (if (and (gptel-agent-harness--agentic-p machine)
                (gptel-agent-harness--top-level-p machine)
                (gptel-agent-harness--can-nudge-p machine))
@@ -458,6 +477,51 @@ NEW-STATE is the optional new state to transition to."
      ;; Everything else
      (t (funcall orig-fn machine new-state)))))
 
+;;;; Mode-line Context Ratio Display
+
+(defcustom gptel-agent-harness-show-context-ratio t
+  "Whether to show context usage ratio in the mode-line."
+  :type 'boolean
+  :group 'gptel-agent-harness)
+
+(defun gptel-agent-harness--context-ratio-indicator ()
+  "Return a propertized string showing context usage ratio.
+Returns empty string if ratio is not yet computed or display is disabled."
+  (if (and gptel-agent-harness-show-context-ratio
+           gptel-agent-harness--context-ratio)
+      (let* ((pct (round (* 100 gptel-agent-harness--context-ratio)))
+             (face (cond
+                    ((>= pct 80) 'error)
+                    ((>= 80 pct 50) 'warning)
+                    (t 'success)))
+             ;; Use %%%% so `format' produces "%%", which mode-line
+             ;; renders as a literal "%" (since % is a mode-line format spec).
+             (text (format " [Ctx:%d%%%%]" pct)))
+        (propertize text 'face face
+                    'help-echo (format "Context window usage: %d%%\nCompaction threshold: %d%%"
+                                       pct
+                                       (round (* 100 gptel-agent-harness-context-trigger)))))
+    ""))
+
+(defvar-local gptel-agent-harness--mode-line-construct
+  '(:eval (gptel-agent-harness--context-ratio-indicator))
+  "Mode-line construct showing context usage ratio in gptel buffers.")
+(put 'gptel-agent-harness--mode-line-construct 'risky-local-variable t)
+
+(defun gptel-agent-harness--setup-mode-line ()
+  "Add context ratio indicator to mode-line for the current gptel buffer."
+  (unless (memq 'gptel-agent-harness--mode-line-construct
+                mode-line-misc-info)
+    (setq-local mode-line-misc-info
+                (append mode-line-misc-info
+                        '(gptel-agent-harness--mode-line-construct)))))
+
+(defun gptel-agent-harness--teardown-mode-line ()
+  "Remove context ratio indicator from mode-line for the current buffer."
+  (setq-local mode-line-misc-info
+              (delq 'gptel-agent-harness--mode-line-construct
+                    mode-line-misc-info)))
+
 ;;;; Minor Mode
 
 ;;;###autoload
@@ -472,18 +536,32 @@ Provides completion and context supervision."
       (progn
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
+        (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
+        ;; Set up for already-open gptel buffers
+        (dolist (buf (buffer-list))
+          (with-current-buffer buf
+            (when gptel-mode
+              (gptel-agent-harness--setup-mode-line))))
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
     ;; disable
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
+    (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
+    ;; Clean up from all gptel buffers
+    (dolist (buf (buffer-list))
+      (with-current-buffer buf
+        (when gptel-mode
+          (gptel-agent-harness--teardown-mode-line)
+          (setq gptel-agent-harness--context-ratio nil)
+          (force-mode-line-update))))
     (when gptel-agent-harness-verbose
       (message "gptel-agent-harness disabled"))))
 
 ;;;; Tests (ERT)
 ;; Run with:
-;;   emacs --batch -L ~/.emacs.d/elpa-30.1/compat-30.0.2.0/ \
-;;     -L ~/.emacs.d/elpa-30.1/gptel-20260709.305/ \
+;;   emacs --batch -L ~/.emacs.d/elpa-30.1/compat-31.0.0.2/ \
+;;     -L ~/.emacs.d/elpa-30.1/gptel-20260713.802/ \
 ;;     -L ~/.emacs.d/elpa-30.1/gptel-agent-20260628.830/ \
 ;;     -L ~/.emacs.d/site-lisp/ \
 ;;     -l gptel-agent-harness \
@@ -657,6 +735,101 @@ Provides completion and context supervision."
             (should (> ratio 0.3))
             (should (< ratio 0.31))))
       (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-context-ratio-indicator ()
+  "Test context ratio indicator string generation."
+  (let ((gptel-agent-harness-show-context-ratio t)
+        (gptel-agent-harness-context-trigger 0.70))
+    ;; No ratio yet → empty string
+    (let ((gptel-agent-harness--context-ratio nil))
+      (should (equal (gptel-agent-harness--context-ratio-indicator) "")))
+    ;; Low usage → success face
+    (let ((gptel-agent-harness--context-ratio 0.25))
+      (let ((result (gptel-agent-harness--context-ratio-indicator)))
+        (should (string-match-p "\\[Ctx:25%%\\]" result))
+        (should (eq (get-text-property 0 'face result) 'success))))
+    ;; Medium usage → warning face
+    (let ((gptel-agent-harness--context-ratio 0.60))
+      (let ((result (gptel-agent-harness--context-ratio-indicator)))
+        (should (string-match-p "\\[Ctx:60%%\\]" result))
+        (should (eq (get-text-property 0 'face result) 'warning))))
+    ;; High usage → error face
+    (let ((gptel-agent-harness--context-ratio 0.85))
+      (let ((result (gptel-agent-harness--context-ratio-indicator)))
+        (should (string-match-p "\\[Ctx:85%%\\]" result))
+        (should (eq (get-text-property 0 'face result) 'error))))
+    ;; Display disabled → empty string
+    (let ((gptel-agent-harness-show-context-ratio nil)
+          (gptel-agent-harness--context-ratio 0.50))
+      (should (equal (gptel-agent-harness--context-ratio-indicator) "")))))
+
+(ert-deftest gptel-agent-harness-test-mode-line-setup-idempotent ()
+  "Test mode-line setup is idempotent and uses a risky construct.
+Plain add/remove behaviour is covered by the enable/disable test;
+this focuses on the properties that test does not exercise."
+  (let ((buf (generate-new-buffer " *harness-test*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local gptel-mode t)
+          ;; The construct symbol must be risky so its :eval is evaluated
+          ;; by the mode-line renderer.
+          (should (get 'gptel-agent-harness--mode-line-construct
+                       'risky-local-variable))
+          ;; Calling setup twice must not create duplicate entries.
+          (gptel-agent-harness--setup-mode-line)
+          (gptel-agent-harness--setup-mode-line)
+          (should (= 1 (cl-count 'gptel-agent-harness--mode-line-construct
+                                 mode-line-misc-info))))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-mode-enable-disable ()
+  "End-to-end regression: enabling and disabling the global mode.
+Verifies advice installation, hook registration, per-buffer mode-line
+setup, and complete cleanup on disable."
+  (let ((buf (generate-new-buffer " *harness-test*"))
+        (was-enabled gptel-agent-harness-mode))
+    (unwind-protect
+        (progn
+          ;; Start from a known-disabled state
+          (when was-enabled (gptel-agent-harness-mode -1))
+          (with-current-buffer buf (setq-local gptel-mode t))
+          ;; --- Enable ---
+          (gptel-agent-harness-mode 1)
+          ;; Transition advice installed
+          (should (advice-member-p
+                   #'gptel-agent-harness--transition-advice
+                   'gptel--fsm-transition))
+          ;; gptel-mode-hook registered for auto-setup in new buffers
+          (should (memq #'gptel-agent-harness--setup-mode-line
+                        gptel-mode-hook))
+          ;; Already-open gptel buffer got the mode-line construct
+          (with-current-buffer buf
+            (should (memq 'gptel-agent-harness--mode-line-construct
+                          mode-line-misc-info))
+            ;; Simulate a computed ratio → indicator renders
+            (setq-local gptel-agent-harness--context-ratio 0.42)
+            (should (string-match-p
+                     "\\[Ctx:42%%\\]"
+                     (gptel-agent-harness--context-ratio-indicator))))
+          ;; --- Disable ---
+          (gptel-agent-harness-mode -1)
+          ;; Transition advice removed
+          (should-not (advice-member-p
+                       #'gptel-agent-harness--transition-advice
+                       'gptel--fsm-transition))
+          ;; Hook removed
+          (should-not (memq #'gptel-agent-harness--setup-mode-line
+                            gptel-mode-hook))
+          ;; Buffer cleaned up: construct removed and ratio reset
+          (with-current-buffer buf
+            (should-not (memq 'gptel-agent-harness--mode-line-construct
+                              mode-line-misc-info))
+            (should-not gptel-agent-harness--context-ratio)))
+      (kill-buffer buf)
+      ;; Restore prior mode state
+      (if was-enabled
+          (gptel-agent-harness-mode 1)
+        (gptel-agent-harness-mode -1)))))
 
 (provide 'gptel-agent-harness)
 ;;; gptel-agent-harness.el ends here
