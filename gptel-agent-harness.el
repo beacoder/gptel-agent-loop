@@ -342,6 +342,13 @@ Uses the cached `gptel-agent-harness--context-ratio' if available."
                 (> ratio gptel-agent-harness-context-trigger))))))
 
 ;;;; Automatic Compaction
+(defcustom gptel-agent-harness-compact-header
+  "**[Compacted Summary]**\n\n"
+  "Header inserted at the top of the buffer after compaction.
+Helps distinguish the summary from original conversation text."
+  :type 'string
+  :group 'gptel-agent-harness)
+
 (defcustom gptel-agent-harness-compact-separator
   "\n\n---\n\n**[Context compacted]**\n\n---\n\n"
   "Separator inserted after compaction to visually indicate the boundary."
@@ -409,6 +416,9 @@ Return non-nil if compaction was initiated, nil otherwise."
                      (setq gptel-agent-harness--nudge-count 0)
                      (condition-case err
                          (progn
+                           ;; Header at top of compacted summary
+                           (goto-char (point-min))
+                           (insert gptel-agent-harness-compact-header)
                            (goto-char (point-max))
                            ;; Visual separator
                            (insert gptel-agent-harness-compact-separator)
