@@ -500,17 +500,18 @@ Returns empty string if ratio is not yet computed or display is disabled."
   (if (and gptel-agent-harness-show-context-ratio
            gptel-agent-harness--context-ratio)
       (let* ((pct (round (* 100 gptel-agent-harness--context-ratio)))
+             (threshold-pct (round (* 100 gptel-agent-harness-context-trigger)))
              (face (cond
                     ((>= pct 80) 'error)
                     ((>= 80 pct 50) 'warning)
                     (t 'success)))
              ;; Use %%%% so `format' produces "%%", which mode-line
              ;; renders as a literal "%" (since % is a mode-line format spec).
-             (text (format " [Ctx:%d%%%%]" pct)))
+             (text (format " [Ctx:%d%%%%/%d%%%%]" pct threshold-pct)))
         (propertize text 'face face
                     'help-echo (format "Context window usage: %d%%\nCompaction threshold: %d%%"
                                        pct
-                                       (round (* 100 gptel-agent-harness-context-trigger)))))
+                                       threshold-pct)))
     ""))
 
 (defvar-local gptel-agent-harness--mode-line-construct
