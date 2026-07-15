@@ -196,15 +196,15 @@
       (should (equal (gptel-agent-harness--context-ratio-indicator) "")))
     (let ((gptel-agent-harness--context-ratio 0.25))
       (let ((result (gptel-agent-harness--context-ratio-indicator)))
-        (should (string-match-p "\\[Ctx:25%%\\]" result))
+        (should (string-match-p "\\[Ctx:25%%/70%%\\]" result))
         (should (eq (get-text-property 0 'face result) 'success))))
     (let ((gptel-agent-harness--context-ratio 0.60))
       (let ((result (gptel-agent-harness--context-ratio-indicator)))
-        (should (string-match-p "\\[Ctx:60%%\\]" result))
+        (should (string-match-p "\\[Ctx:60%%/70%%\\]" result))
         (should (eq (get-text-property 0 'face result) 'warning))))
     (let ((gptel-agent-harness--context-ratio 0.85))
       (let ((result (gptel-agent-harness--context-ratio-indicator)))
-        (should (string-match-p "\\[Ctx:85%%\\]" result))
+        (should (string-match-p "\\[Ctx:85%%/70%%\\]" result))
         (should (eq (get-text-property 0 'face result) 'error))))
     (let ((gptel-agent-harness-show-context-ratio nil)
           (gptel-agent-harness--context-ratio 0.50))
@@ -243,7 +243,7 @@
                           mode-line-misc-info))
             (setq-local gptel-agent-harness--context-ratio 0.42)
             (should (string-match-p
-                     "\\[Ctx:42%%\\]"
+                     "\\[Ctx:42%%/70%%\\]"
                      (gptel-agent-harness--context-ratio-indicator))))
           (gptel-agent-harness-mode -1)
           (should-not (advice-member-p
