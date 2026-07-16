@@ -2,7 +2,7 @@
 
 Agent execution harness for `gptel-agent`.
 
-`gptel-agent-harness` improves the reliability of gptel agent sessions by providing two execution supervisors:
+`gptel-agent-harness` improves the reliability of gptel agent sessions by providing three execution supervisors:
 
 1. **Completion supervision**
 
@@ -16,6 +16,13 @@ Agent execution harness for `gptel-agent`.
    * Monitors estimated context usage before LLM requests.
    * Automatically triggers context compaction when the context window exceeds a configurable threshold.
    * Supports model-specific context window sizes.
+   * Self-calibrates token estimation using actual API-reported token counts.
+
+3. **Session management**
+
+   * Auto-saves gptel agent buffers after each LLM response.
+   * Stores full session state (model, backend, system prompt, tools, parameters).
+   * Restore any session with `gptel-agent-harness-restore-session` or the most recent one with `gptel-agent-harness-restore-latest-session`.
 
 The goal is to make gptel agents behave more like reliable coding agents:
 
@@ -285,6 +292,96 @@ Configure with:
 
 ---
 
+# Session Management
+
+Agent sessions are valuable — losing context after a crash or accidental buffer kill is costly. `gptel-agent-harness` auto-saves sessions to disk after every LLM response.
+
+## How It Works
+
+```
+LLM responds
+      |
+      v
+gptel-post-response-functions fires
+      |
+      v
+auto-save buffer + metadata to session dir
+```
+
+Each buffer gets a single timestamped session file on first save. Subsequent saves overwrite the same file with updated content and state.
+
+## Session Directory
+
+### `gptel-agent-harness-session-dir`
+
+Where session files are stored.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-session-dir
+      (expand-file-name "gptel-sessions/" user-emacs-directory))
+```
+
+## Enable/Disable Auto-Save
+
+### `gptel-agent-harness-auto-save-session`
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-auto-save-session t)
+```
+
+Disable:
+
+```elisp
+(setq gptel-agent-harness-auto-save-session nil)
+```
+
+## Restoring Sessions
+
+Restore a specific session:
+
+```
+M-x gptel-agent-harness-restore-session
+```
+
+Restore the most recent session:
+
+```
+M-x gptel-agent-harness-restore-latest-session
+```
+
+Restored sessions open in a fresh buffer (not visiting the session file) with all gptel state restored: model, backend, system prompt, temperature, max tokens, etc.
+
+---
+
+# Token Calibration
+
+The context supervision uses a heuristic token estimate (~4 chars/token for Latin, ~2 chars/token for CJK). This can drift from actual tokenizer behavior.
+
+`gptel-agent-harness` self-calibrates by comparing its estimate to the actual total token count (input + output) reported by the API after each response.
+
+```
+after LLM response
+       |
+       v
+read actual total tokens from gptel--token-usage
+       |
+       v
+calibration = actual_total / raw_estimate
+       |
+       v
+apply calibration to future estimates
+```
+
+The calibration factor is clamped to `[0.5, 3.0]` to avoid pathological values from measurement anomalies.
+
+No configuration needed — calibration happens automatically.
+
+---
+
 # Example Configuration
 
 ```elisp
@@ -294,6 +391,7 @@ Configure with:
   (progn
     (setq gptel-agent-harness-max-nudges 3
           gptel-agent-harness-context-trigger 0.75
+          gptel-agent-harness-auto-save-session t
           gptel-agent-harness-verbose t)
     (gptel-agent-harness-mode 1)
     (require 'gptel-context)
