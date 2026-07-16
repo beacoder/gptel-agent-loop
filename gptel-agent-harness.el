@@ -601,18 +601,22 @@ Return non-nil if compaction was initiated, nil otherwise."
         (gptel-abort buf)
         ;; 3. Compact with closure capturing per-buffer state
         (let ((resume-buf buf)
-              (resume-requests requests)
-              (gptel-agent-compact-prompt
-               gptel-agent-harness-compact-prompt))
+              (resume-requests requests))
+          ;; Set compact prompt buffer-locally so it persists through
+          ;; the async operation (a dynamic `let' would unwind before
+          ;; the LLM request is actually sent).
+          (setq-local gptel-agent-compact-prompt
+                      gptel-agent-harness-compact-prompt)
           (condition-case err
               (gptel-agent-compact
                nil
                (lambda (&optional _info)
                  (when (and resume-requests resume-buf (buffer-live-p resume-buf))
                    (with-current-buffer resume-buf
+                     (kill-local-variable 'gptel-agent-compact-prompt)
                      (setq gptel-agent-harness--compacting-p nil)
                      (setq gptel-agent-harness--nudge-count 0)
-                     (condition-case err
+                     (condition-case resume-err
                          (progn
                            ;; Header at top of compacted summary
                            (goto-char (point-min))
@@ -626,8 +630,9 @@ Return non-nil if compaction was initiated, nil otherwise."
                        (error
                         (when gptel-agent-harness-verbose
                           (message "gptel-agent-harness: resume failed — %s"
-                                   (error-message-string err)))))))))
+                                   (error-message-string resume-err)))))))))
             (error
+             (kill-local-variable 'gptel-agent-compact-prompt)
              (setq gptel-agent-harness--compacting-p nil)
              (when gptel-agent-harness-verbose
                (message "gptel-agent-harness: gptel-agent-compact failed — %s"
@@ -706,7 +711,7 @@ Returns empty string if ratio is not yet computed or display is disabled."
              (threshold-pct (round (* 100 gptel-agent-harness-context-trigger)))
              (face (cond
                     ((>= pct 80) 'error)
-                    ((>= 80 pct 50) 'warning)
+                    ((and (>= pct 50) (< pct 80)) 'warning)
                     (t 'success)))
              ;; Use %%%% so `format' produces "%%", which mode-line
              ;; renders as a literal "%" (since % is a mode-line format spec).
@@ -723,18 +728,24 @@ Returns empty string if ratio is not yet computed or display is disabled."
 (put 'gptel-agent-harness--mode-line-construct 'risky-local-variable t)
 
 (defun gptel-agent-harness--setup-mode-line ()
-  "Add context ratio indicator to mode-line for the current gptel buffer."
+  "Add context ratio indicator to mode-line for the current gptel buffer.
+Also hides `which-function-mode' display as it provides no useful info
+in gptel buffers but consumes mode-line space."
   (unless (memq 'gptel-agent-harness--mode-line-construct
                 mode-line-misc-info)
     (setq-local mode-line-misc-info
                 (append mode-line-misc-info
-                        '(gptel-agent-harness--mode-line-construct)))))
+                        '(gptel-agent-harness--mode-line-construct))))
+  ;; Hide which-func from this buffer's mode-line without disabling the global mode
+  (setq-local which-func-mode nil))
 
 (defun gptel-agent-harness--teardown-mode-line ()
-  "Remove context ratio indicator from mode-line for the current buffer."
+  "Remove context ratio indicator from mode-line for the current buffer.
+Restores `which-func-mode' to its global default."
   (setq-local mode-line-misc-info
               (delq 'gptel-agent-harness--mode-line-construct
-                    mode-line-misc-info)))
+                    mode-line-misc-info))
+  (kill-local-variable 'which-func-mode))
 
 ;;;; Session Auto-Save Setup
 
@@ -772,7 +783,8 @@ Provides completion and context supervision."
       (progn
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
-        (define-key gptel-mode-map (kbd "C-c C-k") #'gptel-abort)
+        (when (boundp 'gptel-mode-map)
+          (define-key gptel-mode-map (kbd "C-c C-k") #'gptel-abort))
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
         ;; Set up for already-open gptel buffers
@@ -786,7 +798,8 @@ Provides completion and context supervision."
     ;; disable
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
-    (define-key gptel-mode-map (kbd "C-c C-k") nil)
+    (when (boundp 'gptel-mode-map)
+      (define-key gptel-mode-map (kbd "C-c C-k") nil))
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
     ;; Clean up from all gptel buffers
