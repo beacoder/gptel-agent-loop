@@ -172,23 +172,30 @@ Used for session restore to set `default-directory'.")
                  (gptel--num-messages-to-send      . integerp)))
   (put (car entry) 'safe-local-variable (cdr entry)))
 
+(defvar-local gptel-agent-harness--session-file-cache nil
+  "Cached session file path for this buffer.
+Set once on first auto-save, reused for subsequent saves.")
+
 (defun gptel-agent-harness--session-file (&optional buffer)
   "Return the session file path for BUFFER (default: current buffer).
+Returns the cached path if available, otherwise generates a new one.
 Returns nil if the buffer is not a gptel agent buffer."
   (let ((buf (or buffer (current-buffer))))
     (when (buffer-live-p buf)
       (with-current-buffer buf
         (when gptel-mode
-          (let* ((proj-dir (or gptel-agent-harness--project-dir
-                               default-directory))
-                 (proj-name (file-name-nondirectory
-                             (directory-file-name proj-dir)))
-                 (buf-name (replace-regexp-in-string "^_+\\|_+$" ""
-                           (replace-regexp-in-string "[*:/]" "_" (buffer-name buf))))
-                 (timestamp (format-time-string "%Y%m%d-%H%M%S"))
-                 (file-name (format "%s_%s_%s.md" proj-name buf-name timestamp)))
-            (expand-file-name file-name
-                              gptel-agent-harness-session-dir)))))))
+          (or gptel-agent-harness--session-file-cache
+              (let* ((proj-dir (or gptel-agent-harness--project-dir
+                                   default-directory))
+                     (proj-name (file-name-nondirectory
+                                 (directory-file-name proj-dir)))
+                     (buf-name (replace-regexp-in-string "^_+\\|_+$" ""
+                               (replace-regexp-in-string "[*:/]" "_" (buffer-name buf))))
+                     (timestamp (format-time-string "%Y%m%d-%H%M%S"))
+                     (file-name (format "%s_%s_%s.md" proj-name buf-name timestamp)))
+                (setq gptel-agent-harness--session-file-cache
+                      (expand-file-name file-name
+                                        gptel-agent-harness-session-dir)))))))))
 
 (defun gptel-agent-harness--write-local-vars (vars)
   "Insert a ;; Local Variables: block for VARS at point.
