@@ -772,6 +772,7 @@ Provides completion and context supervision."
       (progn
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
+        (define-key gptel-mode-map (kbd "C-c C-k") #'gptel-abort)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
         ;; Set up for already-open gptel buffers
@@ -785,6 +786,7 @@ Provides completion and context supervision."
     ;; disable
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
+    (define-key gptel-mode-map (kbd "C-c C-k") nil)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
     ;; Clean up from all gptel buffers
