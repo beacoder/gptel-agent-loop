@@ -23,7 +23,7 @@ compile: clean-elc
 	${EMACS} -Q --eval $(subst PACKAGES,${DEPS},${INIT_PACKAGES}) -L . -batch -f batch-byte-compile gptel-agent-harness.el gptel-agent-harness-test.el
 
 test: clean-elc
-	${EMACS} -Q --eval $(subst PACKAGES,${DEPS},${INIT_PACKAGES}) -L . -batch -l gptel-agent-harness-test --eval '(ert-run-tests-batch "^gptel-agent-harness-test")'
+	${EMACS} -Q --eval $(subst PACKAGES,${DEPS},${INIT_PACKAGES}) -L . -batch -l gptel-agent-harness-test --eval '(ert-run-tests-batch-and-exit "^gptel-agent-harness-test")'
 
 clean-elc:
 	rm -f *.elc
