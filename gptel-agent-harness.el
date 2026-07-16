@@ -189,10 +189,8 @@ Returns nil if the buffer is not a gptel agent buffer."
                                    default-directory))
                      (proj-name (file-name-nondirectory
                                  (directory-file-name proj-dir)))
-                     (buf-name (replace-regexp-in-string "^_+\\|_+$" ""
-                               (replace-regexp-in-string "[*:/]" "_" (buffer-name buf))))
-                     (timestamp (format-time-string "%Y%m%d-%H%M%S"))
-                     (file-name (format "%s_%s_%s.md" proj-name buf-name timestamp)))
+                     (timestamp (format-time-string "%y%m%d%H%M%S"))
+                     (file-name (format "%s_%s.md" proj-name timestamp)))
                 (setq gptel-agent-harness--session-file-cache
                       (expand-file-name file-name
                                         gptel-agent-harness-session-dir)))))))))
