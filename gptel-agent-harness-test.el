@@ -325,7 +325,7 @@
 ;;;; Session Management Tests
 
 (ert-deftest gptel-agent-harness-test-session-file-naming ()
-  "Verify session file name includes timestamp and project/buffer info."
+  "Verify session file name includes timestamp and project info."
   (gptel-agent-harness-test--with-temp-dir temp-dir
     (let ((gptel-agent-harness-session-dir temp-dir))
       (gptel-agent-harness-test--with-buffer buf
@@ -334,9 +334,9 @@
           (gptel-agent-harness-test--setup-gptel-buffer buf "/tmp/project")
           (let* ((file (gptel-agent-harness--session-file))
                  (basename (file-name-nondirectory file)))
-            (should (string-prefix-p "project_test-session_" basename))
+            (should (string-prefix-p "project_" basename))
             (should (string-suffix-p ".md" basename))
-            (should (string-match-p "[0-9]\\{8\\}-[0-9]\\{6\\}" basename))
+            (should (string-match-p "[0-9]\\{12\\}" basename))
             (should (string-prefix-p temp-dir file))))))))
 
 (ert-deftest gptel-agent-harness-test-session-file-nil-when-not-gptel-mode ()
