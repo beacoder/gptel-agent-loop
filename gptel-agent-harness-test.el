@@ -395,15 +395,18 @@
   "Ensure the latest session file is chosen for restore."
   (gptel-agent-harness-test--with-temp-dir temp-dir
     (let ((gptel-agent-harness-session-dir temp-dir))
-      (gptel-agent-harness-test--with-buffer buf
-        (with-current-buffer buf
-          (rename-buffer "*test-latest*" t)
-          (gptel-agent-harness-test--setup-gptel-buffer buf "/tmp/project")
-          ;; Create two session files with a delay
+      ;; Create two session files from different buffers
+      (gptel-agent-harness-test--with-buffer buf1
+        (with-current-buffer buf1
+          (rename-buffer "*test-first*" t)
+          (gptel-agent-harness-test--setup-gptel-buffer buf1 "/tmp/project")
           (insert "first")
-          (gptel-agent-harness--auto-save-session)
-          (sleep-for 1)
-          (erase-buffer)
+          (gptel-agent-harness--auto-save-session)))
+      (sleep-for 1)
+      (gptel-agent-harness-test--with-buffer buf2
+        (with-current-buffer buf2
+          (rename-buffer "*test-second*" t)
+          (gptel-agent-harness-test--setup-gptel-buffer buf2 "/tmp/project")
           (insert "second")
           (gptel-agent-harness--auto-save-session)))
       ;; Verify latest is "second"
@@ -433,7 +436,28 @@
           (gptel-agent-harness--auto-save-session)
           (should (file-exists-p temp-dir))
           (should (= 1 (length (directory-files temp-dir t "\\.md\\'")))))))))
-
+(ert-deftest gptel-agent-harness-test-auto-save-overwrites-same-file ()
+  "Verify repeated auto-saves from same buffer overwrite the same file."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((gptel-agent-harness-session-dir temp-dir)
+          (gptel-model "gpt-5-mini"))
+      (gptel-agent-harness-test--with-buffer buf
+        (with-current-buffer buf
+          (gptel-agent-harness-test--setup-gptel-buffer buf "/tmp/project")
+          (insert "version-1")
+          (gptel-agent-harness--auto-save-session)
+          (should (= 1 (length (directory-files temp-dir t "\\.md\\'"))))
+          ;; Save again with different content
+          (erase-buffer)
+          (insert "version-2")
+          (gptel-agent-harness--auto-save-session)
+          ;; Still only one file
+          (should (= 1 (length (directory-files temp-dir t "\\.md\\'"))))
+          ;; Content is updated
+          (let ((file (car (directory-files temp-dir t "\\.md\\'"))))
+            (with-temp-buffer
+              (insert-file-contents file)
+              (should (search-forward "version-2" nil t)))))))))
 ;;;; Token Calibration Tests
 
 (ert-deftest gptel-agent-harness-test-calibration-updates-ratio ()
