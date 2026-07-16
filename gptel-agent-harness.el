@@ -49,13 +49,20 @@
 ;;        v
 ;;     compact
 ;;
+;; 3. Session management:
+;;
+;;    Auto-save gptel agent buffers after each LLM response to
+;;    `gptel-agent-harness-session-dir'.  Restore manually with
+;;    `gptel-agent-harness-restore-session' or
+;;    `gptel-agent-harness-restore-latest-session'.
+;;
 ;; Usage:
 ;;   (require 'gptel-agent-harness)
 ;;   (gptel-agent-harness-mode 1)
 ;;
 ;;; Code:
 
-(require 'gptel-agent)
+(require 'gptel-agent nil t)
 (require 'cl-lib)
 
 ;;;; User Options
@@ -139,6 +146,143 @@ Respond in the same language as the conversation."
   "Prompt used for context compaction."
   :type 'string)
 
+;;;; Session Management
+(defcustom gptel-agent-harness-session-dir
+  (expand-file-name "gptel-sessions/" user-emacs-directory)
+  "Directory where gptel agent sessions are auto-saved."
+  :type 'directory
+  :group 'gptel-agent-harness)
+
+(defcustom gptel-agent-harness-auto-save-session t
+  "When non-nil, auto-save gptel agent buffers after each LLM response."
+  :type 'boolean
+  :group 'gptel-agent-harness)
+
+(defvar-local gptel-agent-harness--project-dir nil
+  "Project directory associated with this gptel agent buffer.
+Used for session restore to set `default-directory'.")
+
+;; Declare variables safe-local-variable so session restore can set them.
+(dolist (entry '((gptel-agent-harness--project-dir . stringp)
+                 (gptel-model                      . stringp)
+                 (gptel--backend-name              . stringp)
+                 (gptel-system-prompt              . stringp)
+                 (gptel-temperature                . numberp)
+                 (gptel-max-tokens                 . integerp)
+                 (gptel--num-messages-to-send      . integerp)))
+  (put (car entry) 'safe-local-variable (cdr entry)))
+
+(defun gptel-agent-harness--session-file (&optional buffer)
+  "Return the session file path for BUFFER (default: current buffer).
+Returns nil if the buffer is not a gptel agent buffer."
+  (let ((buf (or buffer (current-buffer))))
+    (when (buffer-live-p buf)
+      (with-current-buffer buf
+        (when gptel-mode
+          (let* ((proj-dir (or gptel-agent-harness--project-dir
+                               default-directory))
+                 (proj-name (file-name-nondirectory
+                             (directory-file-name proj-dir)))
+                 (buf-name (replace-regexp-in-string "^_+\\|_+$" ""
+                           (replace-regexp-in-string "[*:/]" "_" (buffer-name buf))))
+                 (timestamp (format-time-string "%Y%m%d-%H%M%S"))
+                 (file-name (format "%s_%s_%s.md" proj-name buf-name timestamp)))
+            (expand-file-name file-name
+                              gptel-agent-harness-session-dir)))))))
+
+(defun gptel-agent-harness--write-local-vars (vars)
+  "Insert a ;; Local Variables: block for VARS at point.
+VARS is an alist of (VAR-NAME-STRING . VALUE).
+Entries with nil values are skipped."
+  (insert "\n;; Local Variables:\n")
+  (pcase-dolist (`(,name . ,val) vars)
+    (when val
+      (insert (format ";; %s: %S\n" name val))))
+  (insert ";; End:\n"))
+
+(defun gptel-agent-harness--auto-save-session (&rest _)
+  "Auto-save the current gptel agent buffer to session dir.
+Intended as a hook function for `gptel-post-response-functions'."
+  (when (and gptel-mode
+             gptel-agent-harness-auto-save-session)
+    (unless (file-exists-p gptel-agent-harness-session-dir)
+      (make-directory gptel-agent-harness-session-dir t))
+    (when-let* ((file (gptel-agent-harness--session-file)))
+      (with-temp-message "gptel-agent-harness: auto-saving session..."
+        (let* ((source-buf (current-buffer))
+               (proj-dir (or gptel-agent-harness--project-dir
+                             default-directory))
+               (backend-name (or (and (boundp 'gptel--backend-name) gptel--backend-name)
+                                 (when (and (boundp 'gptel-backend) gptel-backend)
+                                   (gptel-backend-name gptel-backend))))
+               (vars `(("gptel-agent-harness--project-dir" . ,proj-dir)
+                       ("gptel--bounds"                    . ,(gptel--get-buffer-bounds))
+                       ("gptel-model"                      . ,gptel-model)
+                       ("gptel--backend-name"              . ,backend-name)
+                       ("gptel-system-prompt"              . ,gptel-system-prompt)
+                       ("gptel--tool-names"                . ,(mapcar #'gptel-tool-name gptel-tools))
+                       ("gptel-temperature"                . ,gptel-temperature)
+                       ("gptel-max-tokens"                 . ,gptel-max-tokens)
+                       ("gptel--num-messages-to-send"      . ,(and (natnump gptel--num-messages-to-send)
+                                                                    gptel--num-messages-to-send)))))
+          (with-temp-buffer
+            (insert-buffer-substring source-buf)
+            (goto-char (point-max))
+            (let ((print-escape-newlines t))
+              (gptel-agent-harness--write-local-vars vars))
+            (write-region (point-min) (point-max) file nil 'silent)))))))
+
+(defun gptel-agent-harness-restore-session (session-file)
+  "Restore a gptel agent session from SESSION-FILE.
+The file should have been created by
+`gptel-agent-harness--auto-save-session'.
+This opens the file, enables `gptel-mode', and restores all state."
+  (interactive
+   (list (read-file-name "Session file: "
+                         gptel-agent-harness-session-dir
+                         nil t)))
+  (let ((buf (generate-new-buffer
+              (file-name-nondirectory session-file))))
+    (switch-to-buffer buf)
+    (insert-file-contents session-file)
+    (setq major-mode 'markdown-mode)
+    (when (fboundp 'markdown-mode) (markdown-mode))
+    ;; Manually parse and apply local variables, then strip the block
+    (save-excursion
+      (goto-char (point-min))
+      (when (search-forward "\n;; Local Variables:" nil t)
+        (let ((start (match-beginning 0)))
+          (forward-line 1)
+          (while (looking-at ";; \\([^:]+\\): \\(.*\\)")
+            (let* ((var-name (string-trim (match-string 1)))
+                   (val-str (match-string 2))
+                   (var-sym (intern var-name)))
+              (when (get var-sym 'safe-local-variable)
+                (set (make-local-variable var-sym)
+                     (car (read-from-string val-str)))))
+            (forward-line 1))
+          (delete-region start (point-max)))))
+    (gptel-mode 1)
+    (when gptel-agent-harness--project-dir
+      (setq default-directory gptel-agent-harness--project-dir))
+    (set-buffer-modified-p nil)
+    (message "gptel-agent-harness: session restored from %s" session-file)))
+
+(defun gptel-agent-harness-restore-latest-session ()
+  "Restore the most recently modified gptel agent session.
+Looks in `gptel-agent-harness-session-dir' for the newest .md file."
+  (interactive)
+  (if (file-directory-p gptel-agent-harness-session-dir)
+      (let* ((files (directory-files gptel-agent-harness-session-dir
+                                     t "\\.md\\'"))
+             (latest (car (sort files #'file-newer-than-file-p))))
+        (if latest
+            (gptel-agent-harness-restore-session latest)
+          (message "No gptel agent sessions found in %s"
+                   gptel-agent-harness-session-dir)))
+    (message "Session directory %s does not exist"
+             gptel-agent-harness-session-dir)))
+
 ;;;; Internal State
 (defvar-local gptel-agent-harness--nudge-count 0
   "Current completion nudge count.")
@@ -149,31 +293,47 @@ Respond in the same language as the conversation."
 (defvar-local gptel-agent-harness--context-ratio nil
   "Last computed context usage ratio (0.0–1.0) for this buffer.")
 
+(defvar-local gptel-agent-harness--token-calibration 1.0
+  "Calibration factor: actual_tokens / estimated_tokens.
+
+Updated after each LLM response using the API-reported input token
+count.  Applied to future estimations to reduce drift.")
+
+(defvar-local gptel-agent-harness--last-raw-estimate nil
+  "Raw token estimate from the last context ratio computation.
+Used by `gptel-agent-harness--update-token-calibration' to compare
+against the actual token count reported by the API.")
+
 ;;;; FSM Helpers
+
+(defmacro gptel-agent-harness--with-fsm-buffer (fsm &rest body)
+  "Execute BODY in FSM's associated buffer if it is live.
+Binds nothing extra; use `current-buffer' inside BODY."
+  (declare (indent 1) (debug (form body)))
+  (let ((buf (gensym "buf")))
+    `(let ((,buf (gptel-agent-harness--buffer ,fsm)))
+       (when (and ,buf (buffer-live-p ,buf))
+         (with-current-buffer ,buf ,@body)))))
+
 (defun gptel-agent-harness--buffer (fsm)
   "Return buffer associated with FSM."
   (plist-get (gptel-fsm-info fsm) :buffer))
 
 (defun gptel-agent-harness--get-nudges (fsm)
   "Return current nudge count for FSM's buffer."
-  (let ((buf (gptel-agent-harness--buffer fsm)))
-    (if (and buf (buffer-live-p buf))
-        (buffer-local-value 'gptel-agent-harness--nudge-count buf)
-      0)))
+  (or (gptel-agent-harness--with-fsm-buffer fsm
+        gptel-agent-harness--nudge-count)
+      0))
 
 (defun gptel-agent-harness--inc-nudges (fsm)
   "Increment and return nudge count for FSM's buffer."
-  (let ((buf (gptel-agent-harness--buffer fsm)))
-    (when (and buf (buffer-live-p buf))
-      (with-current-buffer buf
-        (cl-incf gptel-agent-harness--nudge-count)))))
+  (gptel-agent-harness--with-fsm-buffer fsm
+    (cl-incf gptel-agent-harness--nudge-count)))
 
 (defun gptel-agent-harness--reset-nudges (fsm)
   "Reset nudge count for FSM's buffer to 0."
-  (let ((buf (gptel-agent-harness--buffer fsm)))
-    (when (and buf (buffer-live-p buf))
-      (with-current-buffer buf
-        (setq gptel-agent-harness--nudge-count 0)))))
+  (gptel-agent-harness--with-fsm-buffer fsm
+    (setq gptel-agent-harness--nudge-count 0)))
 
 (defun gptel-agent-harness--terminal-p (state)
   "Return non-nil if STATE is a terminal FSM state."
@@ -324,22 +484,53 @@ serialized content to *gptel-agent-harness-debug*."
     total))
 
 (defun gptel-agent-harness--context-ratio-for-fsm (fsm)
-  "Return context usage ratio based on full prompt payload of FSM."
-  (/ (float (gptel-agent-harness--context-tokens-from-data fsm))
-     (float (gptel-agent-harness--context-window))))
+  "Return context usage ratio based on full prompt payload of FSM.
+Applies the calibration factor from `gptel-agent-harness--token-calibration'."
+  (let* ((calibration (or (gptel-agent-harness--with-fsm-buffer fsm
+                            gptel-agent-harness--token-calibration)
+                          1.0))
+         (estimated (gptel-agent-harness--context-tokens-from-data fsm))
+         (calibrated (* estimated calibration)))
+    (/ calibrated (float (gptel-agent-harness--context-window)))))
+
+(defun gptel-agent-harness--update-token-calibration (&rest _)
+  "Update token calibration factor using the LLM-reported total tokens.
+
+Reads `gptel--token-usage' (set by gptel after each response) and
+compares the actual total token count (input + output) to the raw
+estimate stored during the last context ratio computation.
+The new calibration factor is:
+
+  (actual_input + actual_output) / raw_estimated_tokens
+
+This is called via `gptel-post-response-functions'."
+  (when-let* ((usage (and (boundp 'gptel--token-usage) gptel--token-usage))
+              (request-usage (car usage))
+              (actual-input (plist-get request-usage :input))
+              (actual-output (plist-get request-usage :output))
+              (raw-estimate gptel-agent-harness--last-raw-estimate))
+    (when (and (numberp actual-input) (numberp actual-output)
+               (> (+ actual-input actual-output) 0)
+               (numberp raw-estimate) (> raw-estimate 0))
+      (let* ((actual-total (+ actual-input actual-output))
+             (new-ratio (/ (float actual-total) (float raw-estimate))))
+        ;; Clamp to reasonable range to avoid pathological values
+        (setq new-ratio (max 0.5 (min 3.0 new-ratio)))
+        (setq gptel-agent-harness--token-calibration new-ratio)
+        (when gptel-agent-harness-verbose
+          (message "gptel-agent-harness: calibration updated — total:%d est:%d ratio:%.2f"
+                   actual-total raw-estimate new-ratio))))))
 
 (defun gptel-agent-harness--need-compaction-p (fsm)
   "Return non-nil when compaction is needed for FSM.
 Uses the cached `gptel-agent-harness--context-ratio' if available."
-  (let ((buf (gptel-agent-harness--buffer fsm)))
-    (and buf
-         (buffer-live-p buf)
-         (gptel-agent-harness--agentic-p fsm)
-         (gptel-agent-harness--top-level-p fsm)
-         (not (buffer-local-value 'gptel-agent-harness--compacting-p buf))
-         (let ((ratio (buffer-local-value 'gptel-agent-harness--context-ratio buf)))
-           (and ratio
-                (> ratio gptel-agent-harness-context-trigger))))))
+  (and (gptel-agent-harness--agentic-p fsm)
+       (gptel-agent-harness--top-level-p fsm)
+       (gptel-agent-harness--with-fsm-buffer fsm
+         (and (not gptel-agent-harness--compacting-p)
+              gptel-agent-harness--context-ratio
+              (> gptel-agent-harness--context-ratio
+                 gptel-agent-harness-context-trigger)))))
 
 ;;;; Automatic Compaction
 (defcustom gptel-agent-harness-compact-header
@@ -439,16 +630,21 @@ Return non-nil if compaction was initiated, nil otherwise."
 
 ;;;; FSM Supervisor
 (defun gptel-agent-harness--update-context-ratio (fsm)
-  "Compute and store context ratio for FSM's buffer."
-  (let ((buf (gptel-agent-harness--buffer fsm)))
-    (when (and buf (buffer-live-p buf)
-               (gptel-agent-harness--top-level-p fsm)
-               ;; :data must be a plist (not a buffer during assembly)
-               (not (bufferp (plist-get (gptel-fsm-info fsm) :data))))
-      (let ((ratio (gptel-agent-harness--context-ratio-for-fsm fsm)))
-        (with-current-buffer buf
-          (setq gptel-agent-harness--context-ratio ratio)
-          (force-mode-line-update))))))
+  "Compute and store context ratio for FSM's buffer.
+Also stores the raw (uncalibrated) estimate for calibration."
+  (when (and (gptel-agent-harness--top-level-p fsm)
+             ;; :data must be a plist (not a buffer during assembly)
+             (not (bufferp (plist-get (gptel-fsm-info fsm) :data))))
+    (let* ((raw-estimate (gptel-agent-harness--context-tokens-from-data fsm))
+           (calibration (or (gptel-agent-harness--with-fsm-buffer fsm
+                              gptel-agent-harness--token-calibration)
+                            1.0))
+           (calibrated (* raw-estimate calibration))
+           (ratio (/ calibrated (float (gptel-agent-harness--context-window)))))
+      (gptel-agent-harness--with-fsm-buffer fsm
+        (setq gptel-agent-harness--context-ratio ratio)
+        (setq gptel-agent-harness--last-raw-estimate raw-estimate)
+        (force-mode-line-update)))))
 
 (defun gptel-agent-harness--transition-advice (orig-fn machine &optional new-state)
   "Around advice for `gptel--fsm-transition'.
@@ -533,6 +729,28 @@ Returns empty string if ratio is not yet computed or display is disabled."
               (delq 'gptel-agent-harness--mode-line-construct
                     mode-line-misc-info)))
 
+;;;; Session Auto-Save Setup
+
+(defun gptel-agent-harness--setup-session ()
+  "Set up session auto-save and token calibration for the current gptel buffer.
+Adds hooks to `gptel-post-response-functions' buffer-locally."
+  (when gptel-agent-harness-auto-save-session
+    (add-hook 'gptel-post-response-functions
+              #'gptel-agent-harness--auto-save-session
+              nil t))
+  (add-hook 'gptel-post-response-functions
+            #'gptel-agent-harness--update-token-calibration
+            nil t))
+
+(defun gptel-agent-harness--teardown-session ()
+  "Remove session auto-save and token calibration from the current gptel buffer."
+  (remove-hook 'gptel-post-response-functions
+               #'gptel-agent-harness--auto-save-session
+               t)
+  (remove-hook 'gptel-post-response-functions
+               #'gptel-agent-harness--update-token-calibration
+               t))
+
 ;;;; Minor Mode
 
 ;;;###autoload
@@ -548,23 +766,29 @@ Provides completion and context supervision."
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
+        (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
         ;; Set up for already-open gptel buffers
         (dolist (buf (buffer-list))
           (with-current-buffer buf
             (when gptel-mode
-              (gptel-agent-harness--setup-mode-line))))
+              (gptel-agent-harness--setup-mode-line)
+              (gptel-agent-harness--setup-session))))
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
     ;; disable
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
+    (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
     ;; Clean up from all gptel buffers
     (dolist (buf (buffer-list))
       (with-current-buffer buf
         (when gptel-mode
           (gptel-agent-harness--teardown-mode-line)
+          (gptel-agent-harness--teardown-session)
           (setq gptel-agent-harness--context-ratio nil)
+          (setq gptel-agent-harness--token-calibration 1.0)
+          (setq gptel-agent-harness--last-raw-estimate nil)
           (force-mode-line-update))))
     (when gptel-agent-harness-verbose
       (message "gptel-agent-harness disabled"))))
