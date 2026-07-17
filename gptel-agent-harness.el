@@ -5,7 +5,7 @@
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;; Package-Version: 0.3
-;; Package-Requires: ((emacs "25.1") (compat "0.33.0") (nadvice "0.4") (gptel-agent "0.0.1"))
+;; Package-Requires: ((emacs "29.1") (compat "30.1.0.0") (gptel-agent "0.0.1"))
 ;; Package-Author: Huming Chen
 ;; Package-Keywords: programming, convenience, ai, agent
 ;; Package-Description: Agent execution harness for gptel-agent.
@@ -62,8 +62,8 @@
 ;;
 ;;; Code:
 
-(require 'gptel-agent nil t)
-(require 'gptel-agent-harness-tools)
+(require 'gptel-agent)
+(require 'gptel-agent-harness-extras)
 (require 'cl-lib)
 
 ;;;; User Options
@@ -906,7 +906,7 @@ Provides completion and context supervision."
   :lighter " AgentHarness"
   (if gptel-agent-harness-mode
       (progn
-        (gptel-agent-harness-tools-enable)
+        (gptel-agent-harness-extras-enable)
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
         (when (boundp 'gptel-mode-map)
@@ -922,7 +922,7 @@ Provides completion and context supervision."
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
     ;; disable
-    (gptel-agent-harness-tools-disable)
+    (gptel-agent-harness-extras-disable)
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
     (when (boundp 'gptel-mode-map)
