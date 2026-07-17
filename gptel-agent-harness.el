@@ -536,14 +536,19 @@ Uses:
 
 (defun gptel-agent-harness--context-tokens-from-data (fsm)
   "Estimate tokens from the full prompt payload of FSM.
-Includes system prompt, all user/assistant/tool messages.
+Includes system prompt, all user/assistant/tool messages, and
+tool definitions (schemas).
 When `gptel-agent-harness-verbose' is non-nil, logs the
 serialized content to *gptel-agent-harness-debug*."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
-         (messages (plist-get data :messages))
+         (messages (or (plist-get data :messages)
+                       (plist-get data :input)      ; OpenAI Responses API
+                       (plist-get data :contents))) ; Gemini
          (system (or (plist-get data :system)
                      (plist-get data :system_instruction)
+                     (plist-get data :instructions)    ; OpenAI Responses API
+                     (plist-get data :systemInstruction) ; Gemini
                      ""))
          (total 0)
          (debug-buf (when gptel-agent-harness-verbose
@@ -556,6 +561,15 @@ serialized content to *gptel-agent-harness-debug*."
       ;; System prompt
       (cond
        ((stringp system) (insert system))
+       ;; Gemini: (:parts [(:text "...")])
+       ((and (listp system) (plist-get system :parts))
+        (let ((parts (plist-get system :parts)))
+          (cl-loop for part across (if (vectorp parts) parts (vconcat parts))
+                   do (insert (or (plist-get part :text) (format "%S" part)) "\n"))))
+       ;; Bedrock/Anthropic: [(:text "...")] — vector of text parts
+       ((vectorp system)
+        (cl-loop for part across system
+                 do (insert (or (plist-get part :text) (format "%S" part)) "\n")))
        ((listp system)
         (dolist (s system)
           (insert (or (and (stringp s) s)
@@ -572,7 +586,9 @@ serialized content to *gptel-agent-harness-debug*."
         (cl-loop
          for msg across messages
          for role = (plist-get msg :role)
-         for content = (plist-get msg :content)
+         for content = (or (plist-get msg :content)
+                           ;; Gemini uses :parts [(:text "...") ...]
+                           (plist-get msg :parts))
          for reasoning = (plist-get msg :reasoning_content)
          for tool-calls = (plist-get msg :tool_calls)
          do (erase-buffer)
@@ -582,6 +598,13 @@ serialized content to *gptel-agent-harness-debug*."
          (cond
           ((stringp content)
            (insert content))
+          ((vectorp content)
+           ;; Gemini :parts is a vector of (:text "...") plists
+           (cl-loop for part across content
+                    do (insert (or (and (stringp part) part)
+                                   (plist-get part :thinking)
+                                   (plist-get part :text)
+                                   (format "%S" part)))))
           ((listp content)
            (dolist (part content)
              (cond
@@ -608,7 +631,20 @@ serialized content to *gptel-agent-harness-debug*."
          (when debug-buf
            (let ((text (buffer-string)))
              (with-current-buffer debug-buf
-               (insert (format "--- [%s] ---\n%s\n\n" role text))))))))
+               (insert (format "--- [%s] ---\n%s\n\n" role text)))))))
+      ;; Tool definitions (schemas sent with the request)
+      (when-let* ((tools (or (plist-get data :tools)
+                             ;; Bedrock nests tools under :toolConfig
+                             (plist-get (plist-get data :toolConfig) :tools))))
+        (erase-buffer)
+        (insert (format "%S" tools))
+        (cl-incf total
+                 (gptel-agent-harness--estimate-tokens (point-min) (point-max)))
+        (when debug-buf
+          (let ((text (buffer-string)))
+            (with-current-buffer debug-buf
+              (insert (format "--- [tools] (%d definitions) ---\n%s\n\n"
+                              (length tools) text)))))))
     (when debug-buf
       (with-current-buffer debug-buf
         (insert (format "=== Total estimated tokens: %d ===\n" total)))
@@ -626,32 +662,37 @@ Applies the calibration factor from `gptel-agent-harness--token-calibration'."
     (/ calibrated (float (gptel-agent-harness--context-window)))))
 
 (defun gptel-agent-harness--update-token-calibration (&rest _)
-  "Update token calibration factor using the LLM-reported total tokens.
+  "Update token calibration factor using the LLM-reported input tokens.
 
 Reads `gptel--token-usage' (set by gptel after each response) and
-compares the actual total token count (input + output) to the raw
-estimate stored during the last context ratio computation.
+compares the actual input token count to the raw estimate stored
+during the last context ratio computation.
+
+The raw estimate covers the same content as actual input tokens:
+system prompt, all messages (including previous assistant turns
+and tool results), and tool definitions.  The current response's
+output tokens are NOT included since they were not part of what
+was estimated.
+
 The new calibration factor is:
 
-  (actual_input + actual_output) / raw_estimated_tokens
+  actual_input / raw_estimated_tokens
 
 This is called via `gptel-post-response-functions'."
   (when-let* ((usage (and (boundp 'gptel--token-usage) gptel--token-usage))
               (request-usage (car usage))
               (actual-input (plist-get request-usage :input))
-              (actual-output (plist-get request-usage :output))
               (raw-estimate gptel-agent-harness--last-raw-estimate))
-    (when (and (numberp actual-input) (numberp actual-output)
-               (> (+ actual-input actual-output) 0)
+    (when (and (numberp actual-input)
+               (> actual-input 0)
                (numberp raw-estimate) (> raw-estimate 0))
-      (let* ((actual-total (+ actual-input actual-output))
-             (new-ratio (/ (float actual-total) (float raw-estimate))))
+      (let* ((new-ratio (/ (float actual-input) (float raw-estimate))))
         ;; Clamp to reasonable range to avoid pathological values
         (setq new-ratio (max 0.5 (min 3.0 new-ratio)))
         (setq gptel-agent-harness--token-calibration new-ratio)
         (when gptel-agent-harness-verbose
-          (message "gptel-agent-harness: calibration updated — total:%d est:%d ratio:%.2f"
-                   actual-total raw-estimate new-ratio))))))
+          (message "gptel-agent-harness: calibration updated — input:%d est:%d ratio:%.2f"
+                   actual-input raw-estimate new-ratio))))))
 
 (defun gptel-agent-harness--need-compaction-p (fsm)
   "Return non-nil when compaction is needed for FSM.
@@ -690,7 +731,9 @@ N is `gptel-agent-harness-compact-resume-count'.
 Returns a list of content strings in chronological order."
   (let* ((info (gptel-fsm-info fsm))
          (data (plist-get info :data))
-         (messages (plist-get data :messages))
+         (messages (or (plist-get data :messages)
+                       (plist-get data :input)      ; OpenAI Responses API
+                       (plist-get data :contents))) ; Gemini
          (nudge gptel-agent-harness-nudge-message)
          (n gptel-agent-harness-compact-resume-count)
          result)
