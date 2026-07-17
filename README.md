@@ -2,7 +2,7 @@
 
 Agent execution harness for `gptel-agent`.
 
-`gptel-agent-harness` improves the reliability of gptel agent sessions by providing three execution supervisors:
+`gptel-agent-harness` improves the reliability of gptel agent sessions by providing:
 
 1. **Completion supervision**
 
@@ -16,13 +16,25 @@ Agent execution harness for `gptel-agent`.
    * Monitors estimated context usage before LLM requests.
    * Automatically triggers context compaction when the context window exceeds a configurable threshold.
    * Supports model-specific context window sizes.
-   * Self-calibrates token estimation using actual API-reported token counts.
+   * Self-calibrates token estimation using actual API-reported input token counts.
+   * Displays context usage ratio in mode-line.
 
 3. **Session management**
 
    * Auto-saves gptel agent buffers after each LLM response.
    * Stores full session state (model, backend, system prompt, tools, parameters).
    * Restore any session with `gptel-agent-harness-restore-session` or the most recent one with `gptel-agent-harness-restore-latest-session`.
+   * Live preview during session selection.
+
+4. **Improved tools**
+
+   * Enhanced `glob` tool using `git ls-files` for fast, `.gitignore`-aware file listing in git repos.
+   * Enhanced `grep` tool using `git grep -e` for robust regex handling.
+
+5. **Custom agent definition**
+
+   * Provides `gptel-opencode-agent` as a custom agent entry point.
+   * Uses agent definitions from `gptel-agent-harness-extras-agent-dirs`.
 
 The goal is to make gptel agents behave more like reliable coding agents:
 
@@ -341,7 +353,7 @@ Disable:
 
 ## Restoring Sessions
 
-Restore a specific session:
+Restore a specific session (with live preview):
 
 ```
 M-x gptel-agent-harness-restore-session
@@ -355,22 +367,99 @@ M-x gptel-agent-harness-restore-latest-session
 
 Restored sessions open in a fresh buffer (not visiting the session file) with all gptel state restored: model, backend, system prompt, temperature, max tokens, etc.
 
+### Live Preview
+
+When selecting a session file, a preview window appears on the right showing:
+
+* Session metadata (model, project directory, backend)
+* First 40 lines of content (configurable via `gptel-agent-harness-preview-lines`)
+
+The preview updates as you navigate candidates in the minibuffer.
+
+---
+
+# Mode-Line Display
+
+The harness displays context usage ratio in the mode-line of gptel buffers:
+
+```
+[Ctx:45%/70%]
+```
+
+Color-coded by severity:
+
+* Green (`success`): Below 50%
+* Yellow (`warning`): 50–80%
+* Red (`error`): Above 80%
+
+### `gptel-agent-harness-show-context-ratio`
+
+Enable/disable mode-line display.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-show-context-ratio t)
+```
+
+Disable:
+
+```elisp
+(setq gptel-agent-harness-show-context-ratio nil)
+```
+
+---
+
+# Compaction Configuration
+
+## `gptel-agent-harness-compact-header`
+
+Header inserted at the top of the buffer after compaction.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-compact-header
+      "**[Compacted Summary]**\n\n")
+```
+
+## `gptel-agent-harness-compact-separator`
+
+Separator inserted after the compacted summary.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-compact-separator
+      "\n\n---\n\n**[Context compacted]**\n\n---\n\n")
+```
+
+## `gptel-agent-harness-compact-resume-count`
+
+Number of recent user requests to replay after compaction.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-compact-resume-count 3)
+```
+
 ---
 
 # Token Calibration
 
 The context supervision uses a heuristic token estimate (~4 chars/token for Latin, ~2 chars/token for CJK). This can drift from actual tokenizer behavior.
 
-`gptel-agent-harness` self-calibrates by comparing its estimate to the actual total token count (input + output) reported by the API after each response.
+`gptel-agent-harness` self-calibrates by comparing its estimate to the actual **input** token count reported by the API after each response.
 
 ```
 after LLM response
        |
        v
-read actual total tokens from gptel--token-usage
+read actual input tokens from gptel--token-usage
        |
        v
-calibration = actual_total / raw_estimate
+calibration = actual_input / raw_estimate
        |
        v
 apply calibration to future estimates
@@ -379,6 +468,79 @@ apply calibration to future estimates
 The calibration factor is clamped to `[0.5, 3.0]` to avoid pathological values from measurement anomalies.
 
 No configuration needed — calibration happens automatically.
+
+---
+
+# Improved Tools
+
+`gptel-agent-harness` includes enhanced versions of the `glob` and `grep` tools from `gptel-agent-harness-extras`.
+
+## Enhanced Glob Tool
+
+The `glob` tool uses `git ls-files` inside git repositories for:
+
+* **Speed**: Significantly faster than recursive filesystem traversal.
+* **`.gitignore` awareness**: Respects your `.gitignore` rules automatically.
+* **Fallback**: Outside git repos, falls back to `tree` command.
+
+Configuration:
+
+```elisp
+;; No configuration needed — works automatically in git repos
+```
+
+## Enhanced Grep Tool
+
+The `grep` tool passes regex patterns via `-e` flag to `git grep`, avoiding misinterpretation of patterns starting with a dash.
+
+It automatically chooses the best available grepper:
+
+1. `git grep` (inside git repos)
+2. `ripgrep` (`rg`)
+3. Standard `grep`
+
+---
+
+# Custom Agent Definition
+
+`gptel-agent-harness` provides `gptel-opencode-agent` as a custom agent entry point.
+
+## Usage
+
+Call the agent directly:
+
+```elisp
+M-x gptel-opencode-agent
+```
+
+Or from within gptel:
+
+```elisp
+(gptel-opencode-agent)
+```
+
+## Configuration
+
+### `gptel-agent-harness-extras-agent-dirs`
+
+Directories containing agent definition files.
+
+Default:
+
+```elisp
+(setq gptel-agent-harness-extras-agent-dirs
+      (list (expand-file-name "agents" user-emacs-directory)))
+```
+
+Example:
+
+```elisp
+(setq gptel-agent-harness-extras-agent-dirs
+      '("~/my-custom-agents"
+        (expand-file-name "agents" user-emacs-directory)))
+```
+
+Agent definition files in these directories are loaded when the harness is enabled.
 
 ---
 
@@ -408,10 +570,15 @@ No configuration needed — calibration happens automatically.
 
 # Requirements
 
-* Emacs 25.1+
-* gptel >= 0.9.9.5
-* compat >= 0.33.0
-* nadvice >= 0.4
+* Emacs 29.1+
+* gptel-agent >= 0.0.1
+* compat >= 30.1.0.0
+
+Optional (for enhanced tools):
+
+* `git` — for fast glob/grep in git repositories
+* `tree` — fallback for glob outside git repos
+* `ripgrep` (`rg`) — alternative grepper
 
 ---
 
