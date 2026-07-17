@@ -389,8 +389,8 @@ No configuration needed — calibration happens automatically.
   :ensure t
   :config
   (progn
-    (setq gptel-agent-harness-max-nudges 3
-          gptel-agent-harness-context-trigger 0.75
+    (setq gptel-agent-harness-max-nudges 2
+          gptel-agent-harness-context-trigger 0.70
           gptel-agent-harness-auto-save-session t
           gptel-agent-harness-verbose t)
     (gptel-agent-harness-mode 1)
