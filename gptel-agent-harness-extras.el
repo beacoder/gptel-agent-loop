@@ -1,13 +1,13 @@
-;;; gptel-agent-harness-tools.el --- Improved tools for gptel-agent-harness -*- lexical-binding: t -*-
+;;; gptel-agent-harness-extras.el --- Extras for gptel-agent-harness -*- lexical-binding: t -*-
 ;;
 ;; Copyright (C) 2026 Huming Chen
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-harness
 ;; Package-Version: 0.3
-;; Package-Requires: ((emacs "28.1") (gptel-agent "0.0.1"))
+;; Package-Requires: ((emacs "29.1") (gptel-agent "0.0.1"))
 ;; Package-Keywords: programming, convenience, ai, agent
-;; Package-Description: Improved glob and grep tools for gptel-agent-harness.
+;; Package-Description: Improved tools and agent definition for gptel-agent-harness.
 ;;
 ;; This file is not part of GNU Emacs.
 
@@ -26,46 +26,45 @@
 
 ;;; Commentary:
 ;;
-;; Improved glob and grep tool implementations for gptel-agent-harness.
+;; Extras for gptel-agent-harness: improved glob/grep tools and the
+;; gptel-opencode-agent definition.
 ;;
-;; The default `gptel-agent--glob' uses the `tree' command which
-;; does NOT respect .gitignore and can be slow in large repositories.
+;; Tools:
 ;;
-;; The default `gptel-agent--grep' already prefers git-grep when inside
-;; a git repository, but does not pass the regex via `-e' flag which can
-;; cause issues with patterns starting with a dash.
-;;
-;; This file provides:
-;;
-;; - `gptel-agent-harness-tools--glob': Uses `git ls-files' for fast,
+;; - `gptel-agent-harness-extras--glob': Uses `git ls-files' for fast,
 ;;   .gitignore-aware file listing in git repos, falling back to `tree'
 ;;   outside of git.
 ;;
-;; - `gptel-agent-harness-tools--grep': Like the upstream grep but passes
+;; - `gptel-agent-harness-extras--grep': Like the upstream grep but passes
 ;;   the regex via `-e' flag to git-grep for robustness.
+;;
+;; Agent:
+;;
+;; - `gptel-opencode-agent': A special agent entry point that uses custom
+;;   agent definitions from `gptel-agent-harness-extras-agent-dirs'.
 ;;
 ;; These are activated/deactivated by `gptel-agent-harness-mode' in
 ;; gptel-agent-harness.el.  No separate mode is needed.
 ;;
 ;; Usage:
-;;   (require 'gptel-agent-harness-tools)
+;;   (require 'gptel-agent-harness-extras)
 ;;
 ;;; Code:
 
-(require 'gptel-agent nil t)
+(require 'gptel-agent)
 (require 'cl-lib)
 
 ;;;; Internal State
 
-(defvar gptel-agent-harness-tools--orig-glob nil
+(defvar gptel-agent-harness-extras--orig-glob nil
   "Original `gptel-agent--glob' function, saved before override.")
 
-(defvar gptel-agent-harness-tools--orig-grep nil
+(defvar gptel-agent-harness-extras--orig-grep nil
   "Original `gptel-agent--grep' function, saved before override.")
 
 ;;;; Glob Tool — git ls-files with tree fallback
 
-(defun gptel-agent-harness-tools--glob (pattern &optional path depth)
+(defun gptel-agent-harness-extras--glob (pattern &optional path depth)
   "Find files matching PATTERN using `git ls-files' or `tree'.
 
 Inside a git repository, uses `git ls-files' which is significantly
@@ -151,7 +150,7 @@ output is too large, it is truncated by `gptel-agent--truncate-buffer'."
 
 ;;;; Grep Tool — git grep with -e flag
 
-(defun gptel-agent-harness-tools--grep (regex path &optional glob context-lines)
+(defun gptel-agent-harness-extras--grep (regex path &optional glob context-lines)
   "Search for REGEX in file or directory at PATH.
 
 Like the upstream `gptel-agent--grep' but passes REGEX via `-e'
@@ -228,25 +227,100 @@ this tool cannot be used")))))
         (gptel-agent--truncate-buffer "grep")
         (buffer-string)))))
 
+;;;; Agent Definition — gptel-opencode-agent
+
+(defcustom gptel-agent-harness-extras-agent-dirs
+  (list (expand-file-name "agents" user-emacs-directory))
+  "Directories containing agent definition files for the harness.
+Replaces `gptel-agent-dirs' when the harness is enabled."
+  :type '(repeat directory)
+  :group 'gptel-agent-harness)
+
+(defmacro gptel-agent-harness-extras--define-agent (name mcp-servers)
+  "Define a gptel agent function with gptel-name as NAME and connect it to MCP-SERVERS."
+  (let ((func-name (intern (format "gptel-%s" name)))
+        (agent-name (format "gptel-%s" name)))
+    `(defun ,func-name (&optional project-dir)
+       (interactive
+        (list (if-let ((proj (project-current)))
+                  (project-root proj)
+                default-directory)))
+       (when ',mcp-servers
+         (require 'gptel-integrations)
+         (gptel-mcp-connect ',mcp-servers)
+         (while (not (gptel-mcp--get-tools ',mcp-servers))
+           (sleep-for 0.1)))
+       (let ((gptel-use-tools t)
+             (gptel-tools gptel-tools)
+             (gptel-buf
+              (gptel (generate-new-buffer-name
+                      (format ,(format "*%s:%%s*" agent-name)
+                              (cadr (nreverse (file-name-split project-dir)))))
+                     nil
+                     (and (use-region-p)
+                          (buffer-substring (region-beginning) (region-end)))
+                     'interactive)))
+         (with-current-buffer gptel-buf
+           (setq default-directory project-dir)
+           (gptel-agent-update)
+           (when-let* ((gptel-agent-plist
+                        (assoc-default ,agent-name gptel-agent--agents nil nil)))
+             (apply #'gptel-make-preset ',func-name gptel-agent-plist))
+           (gptel--apply-preset
+            ',func-name
+            (lambda (sym val) (set (make-local-variable sym) val))))))))
+
+(defvar gptel-agent-harness-extras--orig-agent-dirs nil
+  "Original `gptel-agent-dirs' value, saved before override.")
+
+(defvar gptel-agent-harness-extras--orig-agent-fn nil
+  "Original `gptel-agent' function, saved before override.")
+
+;; Define `gptel-opencode-agent' at load time.
+(gptel-agent-harness-extras--define-agent opencode-agent nil)
+
 ;;;; Activation / Deactivation (called by gptel-agent-harness-mode)
 
-(defun gptel-agent-harness-tools-enable ()
-  "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions."
-  (unless gptel-agent-harness-tools--orig-glob
-    (setq gptel-agent-harness-tools--orig-glob
-          (symbol-function 'gptel-agent--glob)))
-  (unless gptel-agent-harness-tools--orig-grep
-    (setq gptel-agent-harness-tools--orig-grep
-          (symbol-function 'gptel-agent--grep)))
-  (fset 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
-  (fset 'gptel-agent--grep #'gptel-agent-harness-tools--grep))
+(defun gptel-agent-harness-extras-enable ()
+  "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions.
+Also set up `gptel-opencode-agent' as the default agent."
+  ;; Glob/Grep overrides
+  (when (fboundp 'gptel-agent--glob)
+    (unless gptel-agent-harness-extras--orig-glob
+      (setq gptel-agent-harness-extras--orig-glob
+            (symbol-function 'gptel-agent--glob)))
+    (fset 'gptel-agent--glob #'gptel-agent-harness-extras--glob))
+  (when (fboundp 'gptel-agent--grep)
+    (unless gptel-agent-harness-extras--orig-grep
+      (setq gptel-agent-harness-extras--orig-grep
+            (symbol-function 'gptel-agent--grep)))
+    (fset 'gptel-agent--grep #'gptel-agent-harness-extras--grep))
+  ;; Agent override
+  (unless gptel-agent-harness-extras--orig-agent-dirs
+    (setq gptel-agent-harness-extras--orig-agent-dirs gptel-agent-dirs))
+  (setq gptel-agent-dirs gptel-agent-harness-extras-agent-dirs)
+  (unless gptel-agent-harness-extras--orig-agent-fn
+    (setq gptel-agent-harness-extras--orig-agent-fn
+          (and (fboundp 'gptel-agent) (symbol-function 'gptel-agent))))
+  (fset 'gptel-agent #'gptel-opencode-agent))
 
-(defun gptel-agent-harness-tools-disable ()
-  "Restore original `gptel-agent--glob' and `gptel-agent--grep'."
-  (when gptel-agent-harness-tools--orig-glob
-    (fset 'gptel-agent--glob gptel-agent-harness-tools--orig-glob))
-  (when gptel-agent-harness-tools--orig-grep
-    (fset 'gptel-agent--grep gptel-agent-harness-tools--orig-grep)))
+(defun gptel-agent-harness-extras-disable ()
+  "Restore original `gptel-agent--glob' and `gptel-agent--grep'.
+Also restore the original `gptel-agent' function and agent dirs."
+  ;; Glob/Grep restore
+  (when gptel-agent-harness-extras--orig-glob
+    (fset 'gptel-agent--glob gptel-agent-harness-extras--orig-glob)
+    (setq gptel-agent-harness-extras--orig-glob nil))
+  (when gptel-agent-harness-extras--orig-grep
+    (fset 'gptel-agent--grep gptel-agent-harness-extras--orig-grep)
+    (setq gptel-agent-harness-extras--orig-grep nil))
+  ;; Agent restore
+  (when gptel-agent-harness-extras--orig-agent-dirs
+    (setq gptel-agent-dirs gptel-agent-harness-extras--orig-agent-dirs)
+    (setq gptel-agent-harness-extras--orig-agent-dirs nil))
+  (when gptel-agent-harness-extras--orig-agent-fn
+    (fset 'gptel-agent gptel-agent-harness-extras--orig-agent-fn)
+    (setq gptel-agent-harness-extras--orig-agent-fn nil)))
 
-(provide 'gptel-agent-harness-tools)
-;;; gptel-agent-harness-tools.el ends here
+(provide 'gptel-agent-harness-extras)
+;;; gptel-agent-harness-extras.el ends here
