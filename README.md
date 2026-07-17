@@ -33,7 +33,7 @@ Agent execution harness for `gptel-agent`.
 
 5. **Custom agent definition**
 
-   * Provides `gptel-opencode-agent` as a custom agent entry point.
+   * Provides `gptel-opencode-agent` which has behavior and capabilities similar to opencode's default agent.
    * Uses agent definitions from `gptel-agent-harness-extras-agent-dirs`.
 
 The goal is to make gptel agents behave more like reliable coding agents:
@@ -503,7 +503,7 @@ It automatically chooses the best available grepper:
 
 # Custom Agent Definition
 
-`gptel-agent-harness` provides `gptel-opencode-agent` as a custom agent entry point.
+`gptel-agent-harness` provides `gptel-opencode-agent`, it reuses the system prompt from opencode, and is designed to provide the same behavior and capabilities as the original opencode agent within Emacs.
 
 ## Usage
 
