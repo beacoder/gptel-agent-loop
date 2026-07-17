@@ -63,6 +63,7 @@
 ;;; Code:
 
 (require 'gptel-agent nil t)
+(require 'gptel-agent-harness-tools)
 (require 'cl-lib)
 
 ;;;; User Options
@@ -905,6 +906,7 @@ Provides completion and context supervision."
   :lighter " AgentHarness"
   (if gptel-agent-harness-mode
       (progn
+        (gptel-agent-harness-tools-enable)
         (advice-add 'gptel--fsm-transition
                     :around #'gptel-agent-harness--transition-advice)
         (when (boundp 'gptel-mode-map)
@@ -920,6 +922,7 @@ Provides completion and context supervision."
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
     ;; disable
+    (gptel-agent-harness-tools-disable)
     (advice-remove 'gptel--fsm-transition
                    #'gptel-agent-harness--transition-advice)
     (when (boundp 'gptel-mode-map)
