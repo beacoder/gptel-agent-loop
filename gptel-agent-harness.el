@@ -237,15 +237,135 @@ Intended as a hook function for `gptel-post-response-functions'."
               (gptel-agent-harness--write-local-vars vars))
             (write-region (point-min) (point-max) file nil 'silent)))))))
 
+(defcustom gptel-agent-harness-preview-lines 40
+  "Number of lines to show in session preview buffer.
+Set to 0 or nil to show the entire file."
+  :type '(choice integer (const nil))
+  :group 'gptel-agent-harness)
+
+(defun gptel-agent-harness--preview-session (file)
+  "Display a preview of session FILE in a side window.
+Shows metadata and the first `gptel-agent-harness-preview-lines' lines.
+Returns the preview buffer."
+  (let ((buf (get-buffer-create "*gptel-session-preview*")))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert-file-contents file)
+        ;; Parse local variables for metadata display
+        (goto-char (point-min))
+        (let (metadata)
+          (when (search-forward "\n;; Local Variables:" nil t)
+            (let ((start (match-beginning 0)))
+              (forward-line 1)
+              (while (looking-at ";; \\([^:]+\\): \\(.*\\)")
+                (let ((name (string-trim (match-string 1)))
+                      (val (match-string 2)))
+                  (push (cons name val) metadata))
+                (forward-line 1))
+              ;; Remove local vars block from preview
+              (delete-region start (point-max))))
+          ;; Truncate if needed
+          (when (and gptel-agent-harness-preview-lines
+                     (> gptel-agent-harness-preview-lines 0))
+            (goto-char (point-min))
+            (when (> (count-lines (point-min) (point-max))
+                     gptel-agent-harness-preview-lines)
+              (forward-line gptel-agent-harness-preview-lines)
+              (delete-region (point) (point-max))
+              (insert "\n\n[... truncated ...]\n")))
+          ;; Insert metadata header at top
+          (goto-char (point-min))
+          (let ((header (concat
+                         (propertize "── Session Preview ──" 'face 'bold)
+                         "\n"
+                         (propertize (format "File: %s" (abbreviate-file-name file))
+                                     'face 'font-lock-comment-face)
+                         "\n"
+                         (when-let* ((model (cdr (assoc "gptel-model" metadata))))
+                           (format "Model: %s\n" model))
+                         (when-let* ((proj (cdr (assoc "gptel-agent-harness--project-dir" metadata))))
+                           (format "Project: %s\n" proj))
+                         (when-let* ((backend (cdr (assoc "gptel--backend-name" metadata))))
+                           (format "Backend: %s\n" backend))
+                         (propertize "────────────────────" 'face 'bold)
+                         "\n\n")))
+            (insert header))))
+      (goto-char (point-min))
+      (unless (derived-mode-p 'markdown-mode)
+        (when (fboundp 'markdown-mode) (markdown-mode)))
+      (setq buffer-read-only t)
+      (set-buffer-modified-p nil))
+    (display-buffer buf
+                    '((display-buffer-in-side-window
+                       display-buffer-pop-up-window)
+                      (side . right)
+                      (window-width . 0.5)))
+    buf))
+
+(defun gptel-agent-harness--dismiss-preview ()
+  "Kill the session preview buffer and its window if present."
+  (when-let* ((buf (get-buffer "*gptel-session-preview*")))
+    (when-let* ((win (get-buffer-window buf t)))
+      (unless (eq win (frame-root-window (window-frame win)))
+        (delete-window win)))
+    (kill-buffer buf)))
+
+(defvar gptel-agent-harness--preview-candidate nil
+  "Current candidate being previewed during session selection.")
+
+(defun gptel-agent-harness--preview-candidate-at-point ()
+  "Preview the currently selected session file candidate.
+Intended for use in `post-command-hook' inside the minibuffer."
+  (condition-case nil
+      (when-let* ((cand (or (and (bound-and-true-p vertico--index)
+                                 (bound-and-true-p vertico--candidates)
+                                 (listp vertico--candidates)
+                                 (>= vertico--index 0)
+                                 (< vertico--index (length vertico--candidates))
+                                 (nth vertico--index vertico--candidates))
+                            (and (bound-and-true-p ivy--current)
+                                 ivy--current)
+                            ;; Default completion: grab minibuffer content
+                            (let ((content (minibuffer-contents)))
+                              (when (> (length content) 0)
+                                content)))))
+        ;; Expand relative to minibuffer's default-directory
+        (let ((full-path (expand-file-name cand)))
+          (when (and (file-regular-p full-path)
+                     (not (equal full-path gptel-agent-harness--preview-candidate)))
+            (setq gptel-agent-harness--preview-candidate full-path)
+            (gptel-agent-harness--preview-session full-path))))
+    (error nil)))
+
+(defun gptel-agent-harness--setup-preview-hook ()
+  "Set up live preview in the minibuffer for session selection."
+  (setq gptel-agent-harness--preview-candidate nil)
+  (add-hook 'post-command-hook
+            #'gptel-agent-harness--preview-candidate-at-point nil t))
+
+(defun gptel-agent-harness--read-session-file ()
+  "Read a session file with live preview in a side window.
+Returns the selected file path."
+  (let ((gptel-agent-harness--preview-candidate nil))
+    (unwind-protect
+        (progn
+          (minibuffer-with-setup-hook
+              #'gptel-agent-harness--setup-preview-hook
+            (read-file-name "Session file: "
+                           gptel-agent-harness-session-dir
+                           nil t)))
+      (gptel-agent-harness--dismiss-preview))))
+
 (defun gptel-agent-harness-restore-session (session-file)
   "Restore a gptel agent session from SESSION-FILE.
 The file should have been created by
 `gptel-agent-harness--auto-save-session'.
+During file selection, a live preview is shown in a side window
+as you navigate candidates.
 This opens the file, enables `gptel-mode', and restores all state."
   (interactive
-   (list (read-file-name "Session file: "
-                         gptel-agent-harness-session-dir
-                         nil t)))
+   (list (gptel-agent-harness--read-session-file)))
   (let ((buf (generate-new-buffer
               (file-name-nondirectory session-file))))
     (switch-to-buffer buf)
@@ -452,8 +572,12 @@ serialized content to *gptel-agent-harness-debug*."
          for msg across messages
          for role = (plist-get msg :role)
          for content = (plist-get msg :content)
+         for reasoning = (plist-get msg :reasoning_content)
          for tool-calls = (plist-get msg :tool_calls)
          do (erase-buffer)
+         ;; Reasoning/thinking content (DeepSeek :reasoning_content field)
+         (when (stringp reasoning)
+           (insert reasoning "\n"))
          (cond
           ((stringp content)
            (insert content))
@@ -461,6 +585,8 @@ serialized content to *gptel-agent-harness-debug*."
            (dolist (part content)
              (cond
               ((stringp part) (insert part))
+              ;; Thinking blocks (Claude extended thinking)
+              ((plist-get part :thinking) (insert (plist-get part :thinking)))
               ((plist-get part :text) (insert (plist-get part :text)))
               ((plist-get part :arguments) (insert (plist-get part :arguments)))
               (t (insert (format "%S" part))))))
