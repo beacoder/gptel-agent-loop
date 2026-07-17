@@ -576,6 +576,103 @@
         (should (> ratio 0.44))
         (should (< ratio 0.47))))))
 
+;;;; Tool Override Tests (gptel-agent-harness-tools)
+
+(ert-deftest gptel-agent-harness-test-tools-enable-overrides ()
+  "Test that tools-enable replaces gptel-agent--glob and --grep."
+  (let ((gptel-agent-harness-tools--orig-glob nil)
+        (gptel-agent-harness-tools--orig-grep nil)
+        (orig-glob (symbol-function 'gptel-agent--glob))
+        (orig-grep (symbol-function 'gptel-agent--grep)))
+    (unwind-protect
+        (progn
+          (gptel-agent-harness-tools-enable)
+          ;; After enable, glob/grep should NOT be the originals
+          (should-not (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          ;; The originals should be saved
+          (should (eq gptel-agent-harness-tools--orig-glob orig-glob))
+          (should (eq gptel-agent-harness-tools--orig-grep orig-grep)))
+      ;; Restore
+      (fset 'gptel-agent--glob orig-glob)
+      (fset 'gptel-agent--grep orig-grep)
+      (setq gptel-agent-harness-tools--orig-glob nil)
+      (setq gptel-agent-harness-tools--orig-grep nil))))
+
+(ert-deftest gptel-agent-harness-test-tools-disable-restores ()
+  "Test that tools-disable restores original functions."
+  (let ((gptel-agent-harness-tools--orig-glob nil)
+        (gptel-agent-harness-tools--orig-grep nil)
+        (orig-glob (symbol-function 'gptel-agent--glob))
+        (orig-grep (symbol-function 'gptel-agent--grep)))
+    (unwind-protect
+        (progn
+          (gptel-agent-harness-tools-enable)
+          (gptel-agent-harness-tools-disable)
+          (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
+      ;; Safety restore
+      (fset 'gptel-agent--glob orig-glob)
+      (fset 'gptel-agent--grep orig-grep)
+      (setq gptel-agent-harness-tools--orig-glob nil)
+      (setq gptel-agent-harness-tools--orig-grep nil))))
+
+(ert-deftest gptel-agent-harness-test-tools-enable-idempotent ()
+  "Test that calling tools-enable twice does not lose the original."
+  (let ((gptel-agent-harness-tools--orig-glob nil)
+        (gptel-agent-harness-tools--orig-grep nil)
+        (orig-glob (symbol-function 'gptel-agent--glob))
+        (orig-grep (symbol-function 'gptel-agent--grep)))
+    (unwind-protect
+        (progn
+          (gptel-agent-harness-tools-enable)
+          (gptel-agent-harness-tools-enable) ; second call
+          ;; orig should still point to the real original, not to our override
+          (should (eq gptel-agent-harness-tools--orig-glob orig-glob))
+          (should (eq gptel-agent-harness-tools--orig-grep orig-grep))
+          ;; And disable should still restore correctly
+          (gptel-agent-harness-tools-disable)
+          (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
+      ;; Safety restore
+      (fset 'gptel-agent--glob orig-glob)
+      (fset 'gptel-agent--grep orig-grep)
+      (setq gptel-agent-harness-tools--orig-glob nil)
+      (setq gptel-agent-harness-tools--orig-grep nil))))
+
+(ert-deftest gptel-agent-harness-test-mode-activates-tools ()
+  "Test that enabling gptel-agent-harness-mode also activates tools."
+  (let ((was-enabled gptel-agent-harness-mode)
+        (gptel-agent-harness-tools--orig-glob nil)
+        (gptel-agent-harness-tools--orig-grep nil)
+        (orig-glob (symbol-function 'gptel-agent--glob))
+        (orig-grep (symbol-function 'gptel-agent--grep)))
+    (unwind-protect
+        (progn
+          (when was-enabled (gptel-agent-harness-mode -1))
+          ;; Restore originals before enabling (mode -1 may have swapped them)
+          (fset 'gptel-agent--glob orig-glob)
+          (fset 'gptel-agent--grep orig-grep)
+          (setq gptel-agent-harness-tools--orig-glob nil)
+          (setq gptel-agent-harness-tools--orig-grep nil)
+          ;; Enable mode
+          (gptel-agent-harness-mode 1)
+          ;; After enable, should not be the originals
+          (should-not (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
+          ;; Disable mode
+          (gptel-agent-harness-mode -1)
+          (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
+          (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
+      ;; Safety restore
+      (fset 'gptel-agent--glob orig-glob)
+      (fset 'gptel-agent--grep orig-grep)
+      (setq gptel-agent-harness-tools--orig-glob nil)
+      (setq gptel-agent-harness-tools--orig-grep nil)
+      (if was-enabled
+          (gptel-agent-harness-mode 1)
+        (gptel-agent-harness-mode -1)))))
+
 (provide 'gptel-agent-harness-test)
 
 ;;; gptel-agent-harness-test.el ends here
