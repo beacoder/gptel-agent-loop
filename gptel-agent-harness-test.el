@@ -212,6 +212,60 @@
                                                    (list :text "part two")))))))
         (should (= (gptel-agent-harness--context-tokens-from-data fsm) 5))))))
 
+(ert-deftest gptel-agent-harness-test-context-tokens-reasoning-content ()
+  "Test token estimation includes DeepSeek-style :reasoning_content."
+  (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :system ""
+                   :messages (vector
+                              (list :role "assistant"
+                                    :reasoning_content "think step by step"
+                                    :content "final answer")))))
+        ;; "think step by step\n" = 19 chars → 5 tokens
+        ;; "final answer" = 12 chars → 3 tokens
+        ;; total = 8
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 8))))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-thinking-blocks ()
+  "Test token estimation includes Claude-style :thinking content blocks."
+  (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :system ""
+                   :messages (vector
+                              (list :role "assistant"
+                                    :content (list (list :thinking "let me think about this")
+                                                   (list :text "here is the answer")))))))
+        ;; "let me think about this" = 23 chars → 6 tokens
+        ;; "here is the answer" = 18 chars → 5 tokens (rounded)
+        ;; total = 10 (round(23/4) + round(18/4) = 6 + 5 = 11... let's verify)
+        ;; Actually: combined in one buffer pass = 41 chars → round(41/4) = 10
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 10))))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-reasoning-without-content ()
+  "Test token estimation when message has :reasoning_content but nil :content."
+  (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :system ""
+                   :messages (vector
+                              (list :role "assistant"
+                                    :reasoning_content "internal reasoning here"
+                                    :content nil
+                                    :tool_calls
+                                    (vector
+                                     (list :type "function"
+                                           :id "call_1"
+                                           :function
+                                           (list :name "search"
+                                                 :arguments "{\"q\":\"test\"}"))))))))
+        ;; reasoning: "internal reasoning here\n" = 23 chars
+        ;; nil content: nil is listp in Elisp, dolist does nothing = 0 chars
+        ;; tool_calls: "search\n" + "{\"q\":\"test\"}\n" = 7+13 = 20 chars
+        ;; total = 43 chars → round(43/4) = 11
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 11))))))
+
 (ert-deftest gptel-agent-harness-test-context-tokens-from-data-nil-content ()
   "Test token estimation handles nil content with tool_calls."
   (let ((gptel-agent-harness-verbose nil))
