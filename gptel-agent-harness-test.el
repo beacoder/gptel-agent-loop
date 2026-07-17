@@ -200,6 +200,47 @@
                               (list :role "user" :content "do something")))))
         (should (= (gptel-agent-harness--context-tokens-from-data fsm) 12))))))
 
+(ert-deftest gptel-agent-harness-test-context-tokens-includes-tools ()
+  "Test token estimation includes tool definitions (schemas)."
+  (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      ;; Without tools
+      (let* ((fsm-no-tools (gptel-agent-harness-test--make-fsm buf
+                             :system "sys"
+                             :messages (vector
+                                        (list :role "user" :content "hi"))))
+             (tokens-no-tools (gptel-agent-harness--context-tokens-from-data fsm-no-tools))
+             ;; With tools — a vector of tool schema plists (as gptel serializes them)
+             (tools-array (vector
+                           (list :type "function"
+                                 :function
+                                 (list :name "search_files"
+                                       :description "Search for files matching a pattern"
+                                       :parameters
+                                       (list :type "object"
+                                             :properties
+                                             (list :pattern (list :type "string"
+                                                                  :description "Glob pattern")))))
+                           (list :type "function"
+                                 :function
+                                 (list :name "read_file"
+                                       :description "Read the contents of a file"
+                                       :parameters
+                                       (list :type "object"
+                                             :properties
+                                             (list :path (list :type "string"
+                                                              :description "File path")))))))
+             (fsm-with-tools (gptel-agent-harness-test--make-fsm buf
+                               :system "sys"
+                               :messages (vector
+                                          (list :role "user" :content "hi"))
+                               :tools tools-array))
+             (tokens-with-tools (gptel-agent-harness--context-tokens-from-data fsm-with-tools)))
+        ;; Tools should add a significant number of tokens
+        (should (> tokens-with-tools tokens-no-tools))
+        ;; The difference should be substantial (tool schemas are verbose)
+        (should (> (- tokens-with-tools tokens-no-tools) 10))))))
+
 (ert-deftest gptel-agent-harness-test-context-tokens-from-data-with-list-content ()
   "Test token estimation with structured (list) content in messages."
   (let ((gptel-agent-harness-verbose nil))
@@ -212,9 +253,29 @@
                                                    (list :text "part two")))))))
         (should (= (gptel-agent-harness--context-tokens-from-data fsm) 5))))))
 
-(ert-deftest gptel-agent-harness-test-context-tokens-reasoning-content ()
-  "Test token estimation includes DeepSeek-style :reasoning_content."
+(ert-deftest gptel-agent-harness-test-context-tokens-gemini-format ()
+  "Test token estimation with Gemini-style data (:contents, :systemInstruction, :parts)."
   (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      ;; Gemini uses :contents instead of :messages, :systemInstruction instead
+      ;; of :system, and :parts vectors instead of :content strings.
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :systemInstruction '(:parts [(:text "gemini system")])
+                   :contents (vector
+                              (list :role "user"
+                                    :parts (vector (list :text "hello world")))
+                              (list :role "model"
+                                    :parts (vector (list :text "hi there")))))))
+        ;; "gemini system\n" = 14 chars → 4 tokens (newline from parts loop)
+        ;; "hello world" = 11 chars → 3 tokens
+        ;; "hi there" = 8 chars → 2 tokens
+        ;; total = 9
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 9))))))
+
+(ert-deftest gptel-agent-harness-test-context-tokens-reasoning-and-thinking ()
+  "Test token estimation includes reasoning/thinking content variants."
+  (let ((gptel-agent-harness-verbose nil))
+    ;; DeepSeek-style :reasoning_content
     (gptel-agent-harness-test--with-buffer buf
       (let ((fsm (gptel-agent-harness-test--make-fsm buf
                    :system ""
@@ -224,12 +285,8 @@
                                     :content "final answer")))))
         ;; "think step by step\n" = 19 chars → 5 tokens
         ;; "final answer" = 12 chars → 3 tokens
-        ;; total = 8
-        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 8))))))
-
-(ert-deftest gptel-agent-harness-test-context-tokens-thinking-blocks ()
-  "Test token estimation includes Claude-style :thinking content blocks."
-  (let ((gptel-agent-harness-verbose nil))
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 8))))
+    ;; Claude-style :thinking content blocks
     (gptel-agent-harness-test--with-buffer buf
       (let ((fsm (gptel-agent-harness-test--make-fsm buf
                    :system ""
@@ -237,15 +294,9 @@
                               (list :role "assistant"
                                     :content (list (list :thinking "let me think about this")
                                                    (list :text "here is the answer")))))))
-        ;; "let me think about this" = 23 chars → 6 tokens
-        ;; "here is the answer" = 18 chars → 5 tokens (rounded)
-        ;; total = 10 (round(23/4) + round(18/4) = 6 + 5 = 11... let's verify)
-        ;; Actually: combined in one buffer pass = 41 chars → round(41/4) = 10
-        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 10))))))
-
-(ert-deftest gptel-agent-harness-test-context-tokens-reasoning-without-content ()
-  "Test token estimation when message has :reasoning_content but nil :content."
-  (let ((gptel-agent-harness-verbose nil))
+        ;; Combined in one buffer pass = 41 chars → round(41/4) = 10
+        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 10))))
+    ;; Reasoning with nil content + tool_calls
     (gptel-agent-harness-test--with-buffer buf
       (let ((fsm (gptel-agent-harness-test--make-fsm buf
                    :system ""
@@ -260,9 +311,7 @@
                                            :function
                                            (list :name "search"
                                                  :arguments "{\"q\":\"test\"}"))))))))
-        ;; reasoning: "internal reasoning here\n" = 23 chars
-        ;; nil content: nil is listp in Elisp, dolist does nothing = 0 chars
-        ;; tool_calls: "search\n" + "{\"q\":\"test\"}\n" = 7+13 = 20 chars
+        ;; reasoning: 23 chars + \n, nil content: 0, tool_calls: 20 chars
         ;; total = 43 chars → round(43/4) = 11
         (should (= (gptel-agent-harness--context-tokens-from-data fsm) 11))))))
 
@@ -515,16 +564,16 @@
 ;;;; Token Calibration Tests
 
 (ert-deftest gptel-agent-harness-test-calibration-updates-ratio ()
-  "Test that calibration factor is updated from `gptel--token-usage' (total)."
+  "Test that calibration factor is updated from `gptel--token-usage' (input only)."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (setq-local gptel-agent-harness--token-calibration 1.0)
       (setq-local gptel-agent-harness--last-raw-estimate 100)
-      ;; Simulate gptel reporting 100 input + 20 output = 120 total tokens
-      (setq-local gptel--token-usage (list (list :input 100 :output 20) nil))
+      ;; Simulate gptel reporting 150 input tokens (output is ignored)
+      (setq-local gptel--token-usage (list (list :input 150 :output 20) nil))
       (gptel-agent-harness--update-token-calibration)
-      ;; (100 + 20) / 100 = 1.2
-      (should (= gptel-agent-harness--token-calibration 1.2)))))
+      ;; 150 / 100 = 1.5
+      (should (= gptel-agent-harness--token-calibration 1.5)))))
 
 (ert-deftest gptel-agent-harness-test-calibration-clamped ()
   "Test that calibration factor is clamped to [0.5, 3.0]."
@@ -532,30 +581,26 @@
     (with-current-buffer buf
       (setq-local gptel-agent-harness--token-calibration 1.0)
       (setq-local gptel-agent-harness--last-raw-estimate 100)
-      ;; Extremely high total (800+200=1000) → 10x → clamped to 3.0
+      ;; Extremely high input (800) → 8x → clamped to 3.0
       (setq-local gptel--token-usage (list (list :input 800 :output 200) nil))
       (gptel-agent-harness--update-token-calibration)
       (should (= gptel-agent-harness--token-calibration 3.0))
-      ;; Extremely low total (5+5=10) → 0.1x → clamped to 0.5
+      ;; Extremely low input (5) → 0.05x → clamped to 0.5
       (setq-local gptel--token-usage (list (list :input 5 :output 5) nil))
       (gptel-agent-harness--update-token-calibration)
       (should (= gptel-agent-harness--token-calibration 0.5)))))
 
-(ert-deftest gptel-agent-harness-test-calibration-no-usage ()
-  "Test that calibration is unchanged when `gptel--token-usage' is nil."
+(ert-deftest gptel-agent-harness-test-calibration-no-op ()
+  "Test that calibration is unchanged when usage or estimate is nil."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
+      ;; No usage data
       (setq-local gptel-agent-harness--token-calibration 1.5)
       (setq-local gptel-agent-harness--last-raw-estimate 100)
       (setq-local gptel--token-usage nil)
       (gptel-agent-harness--update-token-calibration)
-      (should (= gptel-agent-harness--token-calibration 1.5)))))
-
-(ert-deftest gptel-agent-harness-test-calibration-no-estimate ()
-  "Test that calibration is unchanged when last-raw-estimate is nil."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (setq-local gptel-agent-harness--token-calibration 1.5)
+      (should (= gptel-agent-harness--token-calibration 1.5))
+      ;; No raw estimate
       (setq-local gptel-agent-harness--last-raw-estimate nil)
       (setq-local gptel--token-usage (list (list :input 120 :output 50) nil))
       (gptel-agent-harness--update-token-calibration)
@@ -578,8 +623,8 @@
 
 ;;;; Tool Override Tests (gptel-agent-harness-extras)
 
-(ert-deftest gptel-agent-harness-test-tools-enable-overrides ()
-  "Test that tools-enable replaces gptel-agent--glob and --grep."
+(ert-deftest gptel-agent-harness-test-tools-enable-disable-idempotent ()
+  "Test tools enable/disable: overrides, restores, and idempotency."
   (let ((gptel-agent-harness-extras--orig-glob nil)
         (gptel-agent-harness-extras--orig-grep nil)
         (orig-glob (symbol-function 'gptel-agent--glob))
@@ -592,45 +637,12 @@
           (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
           ;; The originals should be saved
           (should (eq gptel-agent-harness-extras--orig-glob orig-glob))
-          (should (eq gptel-agent-harness-extras--orig-grep orig-grep)))
-      ;; Restore
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (setq gptel-agent-harness-extras--orig-glob nil)
-      (setq gptel-agent-harness-extras--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-tools-disable-restores ()
-  "Test that tools-disable restores original functions."
-  (let ((gptel-agent-harness-extras--orig-glob nil)
-        (gptel-agent-harness-extras--orig-grep nil)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep)))
-    (unwind-protect
-        (progn
+          (should (eq gptel-agent-harness-extras--orig-grep orig-grep))
+          ;; Second enable should not lose the originals
           (gptel-agent-harness-extras-enable)
-          (gptel-agent-harness-extras-disable)
-          (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
-          (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
-      ;; Safety restore
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (setq gptel-agent-harness-extras--orig-glob nil)
-      (setq gptel-agent-harness-extras--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-tools-enable-idempotent ()
-  "Test that calling tools-enable twice does not lose the original."
-  (let ((gptel-agent-harness-extras--orig-glob nil)
-        (gptel-agent-harness-extras--orig-grep nil)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep)))
-    (unwind-protect
-        (progn
-          (gptel-agent-harness-extras-enable)
-          (gptel-agent-harness-extras-enable) ; second call
-          ;; orig should still point to the real original, not to our override
           (should (eq gptel-agent-harness-extras--orig-glob orig-glob))
           (should (eq gptel-agent-harness-extras--orig-grep orig-grep))
-          ;; And disable should still restore correctly
+          ;; Disable should restore
           (gptel-agent-harness-extras-disable)
           (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
           (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
@@ -642,8 +654,8 @@
 
 ;;;; Agent Override Tests
 
-(ert-deftest gptel-agent-harness-test-agent-enable-overrides-dirs ()
-  "Test that enable sets `gptel-agent-dirs' to the harness agent dirs."
+(ert-deftest gptel-agent-harness-test-agent-enable-disable-idempotent ()
+  "Test agent override: enable overrides dirs+fn, disable restores, idempotent."
   (let ((gptel-agent-harness-extras--orig-agent-dirs nil)
         (gptel-agent-harness-extras--orig-agent-fn nil)
         (gptel-agent-harness-extras--orig-glob nil)
@@ -656,116 +668,20 @@
     (unwind-protect
         (progn
           (gptel-agent-harness-extras-enable)
+          ;; Dirs overridden
           (should (equal gptel-agent-dirs gptel-agent-harness-extras-agent-dirs))
-          (should (equal gptel-agent-harness-extras--orig-agent-dirs orig-dirs)))
-      (setq gptel-agent-dirs orig-dirs)
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (when orig-agent (fset 'gptel-agent orig-agent))
-      (setq gptel-agent-harness-extras--orig-agent-dirs nil)
-      (setq gptel-agent-harness-extras--orig-agent-fn nil)
-      (setq gptel-agent-harness-extras--orig-glob nil)
-      (setq gptel-agent-harness-extras--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-agent-enable-overrides-fn ()
-  "Test that enable fsets `gptel-agent' to `gptel-opencode-agent'."
-  (let ((gptel-agent-harness-extras--orig-agent-dirs nil)
-        (gptel-agent-harness-extras--orig-agent-fn nil)
-        (gptel-agent-harness-extras--orig-glob nil)
-        (gptel-agent-harness-extras--orig-grep nil)
-        (orig-dirs gptel-agent-dirs)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep))
-        (orig-agent (and (fboundp 'gptel-agent)
-                         (symbol-function 'gptel-agent))))
-    (unwind-protect
-        (progn
-          (gptel-agent-harness-extras-enable)
-          ;; After enable, gptel-agent should resolve to gptel-opencode-agent
-          (should (eq (indirect-function 'gptel-agent)
-                      (indirect-function 'gptel-opencode-agent))))
-      (setq gptel-agent-dirs orig-dirs)
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (when orig-agent (fset 'gptel-agent orig-agent))
-      (setq gptel-agent-harness-extras--orig-agent-dirs nil)
-      (setq gptel-agent-harness-extras--orig-agent-fn nil)
-      (setq gptel-agent-harness-extras--orig-glob nil)
-      (setq gptel-agent-harness-extras--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-agent-disable-restores ()
-  "Test that disable restores original `gptel-agent' and `gptel-agent-dirs'."
-  (let ((gptel-agent-harness-extras--orig-agent-dirs nil)
-        (gptel-agent-harness-extras--orig-agent-fn nil)
-        (gptel-agent-harness-extras--orig-glob nil)
-        (gptel-agent-harness-extras--orig-grep nil)
-        (orig-dirs gptel-agent-dirs)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep))
-        (orig-agent (and (fboundp 'gptel-agent)
-                         (symbol-function 'gptel-agent))))
-    (unwind-protect
-        (progn
-          (gptel-agent-harness-extras-enable)
-          (gptel-agent-harness-extras-disable)
-          (should (equal gptel-agent-dirs orig-dirs))
-          (when orig-agent
-            (should (eq (symbol-function 'gptel-agent) orig-agent))))
-      (setq gptel-agent-dirs orig-dirs)
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (when orig-agent (fset 'gptel-agent orig-agent))
-      (setq gptel-agent-harness-extras--orig-agent-dirs nil)
-      (setq gptel-agent-harness-extras--orig-agent-fn nil)
-      (setq gptel-agent-harness-extras--orig-glob nil)
-      (setq gptel-agent-harness-extras--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-agent-enable-idempotent ()
-  "Test that calling enable twice does not lose original agent state."
-  (let ((gptel-agent-harness-extras--orig-agent-dirs nil)
-        (gptel-agent-harness-extras--orig-agent-fn nil)
-        (gptel-agent-harness-extras--orig-glob nil)
-        (gptel-agent-harness-extras--orig-grep nil)
-        (orig-dirs gptel-agent-dirs)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep))
-        (orig-agent (and (fboundp 'gptel-agent)
-                         (symbol-function 'gptel-agent))))
-    (unwind-protect
-        (progn
-          (gptel-agent-harness-extras-enable)
-          (gptel-agent-harness-extras-enable) ; second call
-          ;; Original dirs still saved correctly
           (should (equal gptel-agent-harness-extras--orig-agent-dirs orig-dirs))
-          ;; Disable should restore to true originals
+          ;; Function overridden
+          (should (eq (indirect-function 'gptel-agent)
+                      (indirect-function 'gptel-opencode-agent)))
+          ;; Second enable preserves originals
+          (gptel-agent-harness-extras-enable)
+          (should (equal gptel-agent-harness-extras--orig-agent-dirs orig-dirs))
+          ;; Disable restores everything and clears state
           (gptel-agent-harness-extras-disable)
           (should (equal gptel-agent-dirs orig-dirs))
           (when orig-agent
-            (should (eq (symbol-function 'gptel-agent) orig-agent))))
-      (setq gptel-agent-dirs orig-dirs)
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (when orig-agent (fset 'gptel-agent orig-agent))
-      (setq gptel-agent-harness-extras--orig-agent-dirs nil)
-      (setq gptel-agent-harness-extras--orig-agent-fn nil)
-      (setq gptel-agent-harness-extras--orig-glob nil)
-      (setq gptel-agent-harness-extras--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-disable-clears-state ()
-  "Test that disable nils out saved state for clean re-enable."
-  (let ((gptel-agent-harness-extras--orig-agent-dirs nil)
-        (gptel-agent-harness-extras--orig-agent-fn nil)
-        (gptel-agent-harness-extras--orig-glob nil)
-        (gptel-agent-harness-extras--orig-grep nil)
-        (orig-dirs gptel-agent-dirs)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep))
-        (orig-agent (and (fboundp 'gptel-agent)
-                         (symbol-function 'gptel-agent))))
-    (unwind-protect
-        (progn
-          (gptel-agent-harness-extras-enable)
-          (gptel-agent-harness-extras-disable)
+            (should (eq (symbol-function 'gptel-agent) orig-agent)))
           (should-not gptel-agent-harness-extras--orig-glob)
           (should-not gptel-agent-harness-extras--orig-grep)
           (should-not gptel-agent-harness-extras--orig-agent-dirs)
