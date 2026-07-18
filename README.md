@@ -36,9 +36,7 @@ Agent execution harness for `gptel-agent`.
    * Provides `gptel-opencode-agent` which has behavior and capabilities similar to opencode's default agent.
    * Uses agent definitions from `gptel-agent-harness-extras-agent-dirs`.
 
-The goal is to make gptel agents behave more like reliable coding agents:
-
-> Continue working until completion is verified, and keep long-running sessions usable through automatic context management.
+The goal is to make gptel-agent behave more like reliable coding agent like opencode.
 
 ---
 
