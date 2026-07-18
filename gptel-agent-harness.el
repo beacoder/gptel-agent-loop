@@ -116,37 +116,20 @@ more specific patterns before general ones."
           :key-type string
           :value-type integer))
 
-(defcustom gptel-agent-harness-compact-prompt
-  "You are an anchored context summarization assistant for coding sessions.
+(defconst gptel-agent-harness-compact-prompt-file
+  (expand-file-name
+   "prompts/compact.txt"
+   (file-name-directory (or (locate-library "gptel-agent-harness")
+                            (error "gptel‑agent‑harness not found"))))
+  "File path for the context compaction prompt.")
 
-Summarize only the conversation history you are given.
-
-The newest turns may be kept verbatim outside your summary,
-so focus on older context that still matters for continuing the work.
-
-If the prompt includes a <previous-summary> block,
-treat it as the current anchored summary.
-
-Update it by:
-- preserving still-true details
-- removing stale details
-- merging new facts
-
-Always preserve:
-- exact file paths
-- identifiers
-- API names
-- important decisions
-- constraints
-
-Prefer terse bullets over paragraphs.
-
-Do not answer the conversation itself.
-Do not mention summarizing, compacting, or merging context.
-
-Respond in the same language as the conversation."
-  "Prompt used for context compaction."
-  :type 'string)
+(defun gptel-agent-harness--read-compact-prompt ()
+  "Read the compact prompt from `gptel-agent-harness-compact-prompt-file'."
+  (if (file-exists-p gptel-agent-harness-compact-prompt-file)
+      (with-temp-buffer
+        (insert-file-contents gptel-agent-harness-compact-prompt-file)
+        (buffer-string))
+    (error "Compact prompt file not found: %s" gptel-agent-harness-compact-prompt-file)))
 
 ;;;; Session Management
 (defcustom gptel-agent-harness-session-dir
@@ -830,7 +813,7 @@ Return non-nil if compaction was initiated, nil otherwise."
             ;; the async operation (a dynamic `let' would unwind before
             ;; the LLM request is actually sent).
             (setq-local gptel-agent-compact-prompt
-                        gptel-agent-harness-compact-prompt)
+                        (gptel-agent-harness--read-compact-prompt))
             (condition-case err
                 (gptel-agent-compact
                  nil
