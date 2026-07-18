@@ -72,7 +72,7 @@ The mode is global and installs advice around gptel's FSM transition and request
 
 # Features
 
-## 1. Completion Supervision
+# Completion Supervision
 
 ### Problem
 
