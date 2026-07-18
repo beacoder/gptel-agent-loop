@@ -115,7 +115,7 @@ Sub-agent FSMs are not modified.
 
 ---
 
-## 2. Nudge Mechanism
+## Nudge Mechanism
 
 When the agent attempts to stop, the harness injects:
 
