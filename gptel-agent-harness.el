@@ -747,6 +747,20 @@ Returns a list of content strings in chronological order."
              do (push msg result))
     (mapcar (lambda (msg) (plist-get msg :content)) result)))
 
+(defun gptel-agent-harness--current-round-content ()
+  "Return the buffer content of the current round (last response onward).
+The current round starts at the last text region with the `gptel'
+property value `response', which corresponds to the last LLM response
+in the buffer.  Everything from there to point-max is the current
+round (response + tool results).
+
+Returns nil if no previous response is found."
+  (save-excursion
+    (goto-char (point-max))
+    (when-let* ((props (text-property-search-backward 'gptel 'response t))
+                (resp-start (prop-match-beginning props)))
+      (buffer-substring resp-start (point-max)))))
+
 (cl-defun gptel-agent-harness--compact (fsm)
   "Abort and run context compaction for FSM.
 Return non-nil if compaction was initiated, nil otherwise."
@@ -766,48 +780,95 @@ Return non-nil if compaction was initiated, nil otherwise."
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness: compacting context %.1f%%"
                    (* 100 (gptel-agent-harness--context-ratio-for-fsm fsm))))
-        ;; 2. Stop old FSM
-        (gptel-abort buf)
-        ;; 3. Compact with closure capturing per-buffer state
-        (let ((resume-buf buf)
-              (resume-requests requests))
-          ;; Set compact prompt buffer-locally so it persists through
-          ;; the async operation (a dynamic `let' would unwind before
-          ;; the LLM request is actually sent).
-          (setq-local gptel-agent-compact-prompt
-                      gptel-agent-harness-compact-prompt)
-          (condition-case err
-              (gptel-agent-compact
-               nil
-               (lambda (&optional _info)
-                 (when (and resume-requests resume-buf (buffer-live-p resume-buf))
-                   (with-current-buffer resume-buf
-                     (kill-local-variable 'gptel-agent-compact-prompt)
-                     (setq gptel-agent-harness--compacting-p nil)
-                     (setq gptel-agent-harness--nudge-count 0)
-                     (condition-case resume-err
-                         (progn
-                           ;; Header at top of compacted summary
-                           (goto-char (point-min))
-                           (insert gptel-agent-harness-compact-header)
-                           (goto-char (point-max))
-                           ;; Visual separator
-                           (insert gptel-agent-harness-compact-separator)
-                           ;; Re-insert recent user requests in order
-                           (insert (mapconcat #'identity resume-requests "\n\n"))
-                           (gptel-send))
-                       (error
-                        (when gptel-agent-harness-verbose
-                          (message "gptel-agent-harness: resume failed — %s"
-                                   (error-message-string resume-err)))))))))
-            (error
-             (kill-local-variable 'gptel-agent-compact-prompt)
-             (setq gptel-agent-harness--compacting-p nil)
-             (when gptel-agent-harness-verbose
-               (message "gptel-agent-harness: gptel-agent-compact failed — %s"
-                        (error-message-string err)))
-             (cl-return-from gptel-agent-harness--compact nil))))
-        t))))
+        ;; 2. Save and remove the current round from the buffer before
+        ;;    compaction so the compaction LLM only summarizes older
+        ;;    context, not the in-flight assistant response + tool results.
+        (let (current-round-content)
+          (when-let* ((round (gptel-agent-harness--current-round-content)))
+            (setq current-round-content round)
+            ;; Delete from the start of the last response to end of buffer
+            (save-excursion
+              (goto-char (point-max))
+              (when-let* ((props (text-property-search-backward 'gptel 'response t))
+                          (resp-start (prop-match-beginning props)))
+                (delete-region resp-start (point-max)))))
+          ;; 3. If a previous compaction block exists, extract the old compacted
+          ;;    summary and wrap it in <previous-summary> tags.  The compact
+          ;;    prompt instructs the LLM to treat this as an anchored summary
+          ;;    to update (preserving, removing, merging facts).  Without this
+          ;;    wrapping, the LLM sees it as raw conversation text and
+          ;;    re-summarizes from scratch, making the summary grow unboundedly.
+          ;;    Also clean up the noise markers (header, separator).
+          (save-excursion
+            (goto-char (point-min))
+            (when (search-forward gptel-agent-harness-compact-header nil t)
+              (when-let* ((props (text-property-search-forward 'gptel 'response t))
+                          (resp-begin (prop-match-beginning props)))
+                (let ((old-summary (buffer-substring-no-properties
+                                    (point) resp-begin)))
+                  (when (and old-summary (not (string-blank-p old-summary)))
+                    (goto-char resp-begin)
+                    (when (search-forward
+                           gptel-agent-harness-compact-separator nil t)
+                      (let ((saved-round (buffer-substring resp-begin (point))))
+                        (delete-region (point-min) (point))
+                        (insert saved-round)
+                        (goto-char (point-min))
+                        (insert
+                         (format
+                          "<previous-summary>\n%s\n</previous-summary>\n\n"
+                          (string-trim old-summary))))))))))
+          ;; 4. Stop old FSM
+          (gptel-abort buf)
+          ;; Move point to end so gptel-agent-compact sees the full buffer
+          (goto-char (point-max))
+          ;; 5. Compact with closure capturing per-buffer state
+          (let ((resume-buf buf)
+                (resume-requests requests)
+                (resume-round current-round-content))
+            ;; Set compact prompt buffer-locally so it persists through
+            ;; the async operation (a dynamic `let' would unwind before
+            ;; the LLM request is actually sent).
+            (setq-local gptel-agent-compact-prompt
+                        gptel-agent-harness-compact-prompt)
+            (condition-case err
+                (gptel-agent-compact
+                 nil
+                 (lambda (&optional _info)
+                   (when (and resume-requests resume-buf (buffer-live-p resume-buf))
+                     (with-current-buffer resume-buf
+                       (kill-local-variable 'gptel-agent-compact-prompt)
+                       (setq gptel-agent-harness--compacting-p nil)
+                       (setq gptel-agent-harness--nudge-count 0)
+                       (condition-case resume-err
+                           (progn
+                             ;; Header at top of compacted summary
+                             (goto-char (point-min))
+                             (insert gptel-agent-harness-compact-header)
+                             ;; Re-insert the saved current round
+                             ;; (last assistant response + tool results)
+                             ;; before the separator so it is preserved verbatim
+                             (when resume-round
+                               (goto-char (point-max))
+                               (insert resume-round))
+                             ;; Visual separator
+                             (goto-char (point-max))
+                             (insert gptel-agent-harness-compact-separator)
+                             ;; Re-insert recent user requests in order
+                             (insert (mapconcat #'identity resume-requests "\n\n"))
+                             (gptel-send))
+                         (error
+                          (when gptel-agent-harness-verbose
+                            (message "gptel-agent-harness: resume failed — %s"
+                                     (error-message-string resume-err)))))))))
+              (error
+               (kill-local-variable 'gptel-agent-compact-prompt)
+               (setq gptel-agent-harness--compacting-p nil)
+               (when gptel-agent-harness-verbose
+                 (message "gptel-agent-harness: gptel-agent-compact failed — %s"
+                          (error-message-string err)))
+               (cl-return-from gptel-agent-harness--compact nil))))
+          t)))))
 
 ;;;; FSM Supervisor
 (defun gptel-agent-harness--update-context-ratio (fsm)
