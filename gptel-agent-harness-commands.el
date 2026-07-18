@@ -8,6 +8,7 @@
 ;; Package-Author: Huming Chen
 ;; Package-Keywords: programming, convenience, ai, agent
 ;; Package-Description: Agent execution harness for gptel-agent.
+;; Package-Requires: ((emacs "28.1"))
 ;;
 ;; This file is not part of GNU Emacs.
 
@@ -35,23 +36,23 @@
 (require 'project)
 (require 'cl-lib)
 
-(defconst gptel-agent-harness-initialize-prompt-file
+(defconst gptel-agent-harness-commands--initialize-prompt-file
   (expand-file-name
    "prompts/initialize.txt"
    (file-name-directory (or (locate-library "gptel-agent-harness")
                             (error "Failed to find gptel-agent-harness"))))
   "File path for the project initialization prompt.")
 
-(defun gptel-agent-harness--read-initialize-prompt ()
-  "Read the initialize prompt from `gptel-agent-harness-initialize-prompt-file'."
-  (if (file-exists-p gptel-agent-harness-initialize-prompt-file)
+(defun gptel-agent-harness-commands--read-initialize-prompt ()
+  "Read the initialize prompt from `gptel-agent-harness-commands--initialize-prompt-file'."
+  (if (file-exists-p gptel-agent-harness-commands--initialize-prompt-file)
       (with-temp-buffer
-        (insert-file-contents gptel-agent-harness-initialize-prompt-file)
+        (insert-file-contents gptel-agent-harness-commands--initialize-prompt-file)
         (buffer-string))
     (error "Initialize prompt file not found: %s"
-           gptel-agent-harness-initialize-prompt-file)))
+           gptel-agent-harness-commands--initialize-prompt-file)))
 
-(defun gptel-agent-harness--substitute-placeholders (template project-dir extra)
+(defun gptel-agent-harness-commands--substitute-placeholders (template project-dir extra)
   "Substitute ${path} and $ARGUMENTS in TEMPLATE with PROJECT-DIR and EXTRA."
   (let ((result template))
     (setq result (replace-regexp-in-string
@@ -61,11 +62,11 @@
     result))
 
 ;;;###autoload
-(defun gptel-agent-harness-initialize (&optional project-dir extra)
+(defun gptel-agent-harness-commands-initialize (&optional project-dir extra)
   "Initialize a project by creating or updating AGENTS.md.
 
 Creates a dedicated gptel buffer with agent tools enabled and uses the
-initialize prompt from `gptel-agent-harness-initialize-prompt-file' to
+initialize prompt from `gptel-agent-harness-commands--initialize-prompt-file' to
 guide the LLM in analyzing the repository and generating AGENTS.md.
 
 PROJECT-DIR defaults to the current project root (via `project-current')
@@ -91,8 +92,8 @@ If region is active, the selected text is sent as initial context."
   (unless (file-directory-p project-dir)
     (user-error "Invalid project directory: %s" project-dir))
   (gptel--update-status " Initializing..." 'warning)
-  (let* ((raw-prompt (gptel-agent-harness--read-initialize-prompt))
-         (prompt-content (gptel-agent-harness--substitute-placeholders
+  (let* ((raw-prompt (gptel-agent-harness-commands--read-initialize-prompt))
+         (prompt-content (gptel-agent-harness-commands--substitute-placeholders
                          raw-prompt project-dir extra))
          (preset-name (cl-gensym "gptel-agent-harness-init-"))
          (proj-name (file-name-nondirectory
