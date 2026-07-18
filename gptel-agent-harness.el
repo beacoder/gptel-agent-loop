@@ -27,35 +27,6 @@
 
 ;;; Commentary:
 ;;
-;; 1. Completion supervision:
-;;
-;;    DONE/ERRS
-;;        |
-;;        v
-;;    review task completion
-;;        |
-;;        +-- continue if incomplete
-;;
-;; 2. Context supervision:
-;;
-;;    TOOL finished
-;;        |
-;;        v
-;;       WAIT
-;;        |
-;;        v
-;;    context > threshold?
-;;        |
-;;        v
-;;     compact
-;;
-;; 3. Session management:
-;;
-;;    Auto-save gptel agent buffers after each LLM response to
-;;    `gptel-agent-harness-session-dir'.  Restore manually with
-;;    `gptel-agent-harness-restore-session' or
-;;    `gptel-agent-harness-restore-latest-session'.
-;;
 ;; Usage:
 ;;   (require 'gptel-agent-harness)
 ;;   (gptel-agent-harness-mode 1)
