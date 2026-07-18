@@ -697,7 +697,7 @@
       (setq gptel-agent-harness-tools--orig-grep nil))))
 
 (ert-deftest gptel-agent-harness-test-mode-activates-tools ()
-  "Test that enabling gptel-agent-harness-mode also activates tools."
+  "Test that enabling `gptel-agent-harness-mode' also activates tools."
   (let ((was-enabled gptel-agent-harness-mode)
         (gptel-agent-harness-tools--orig-glob nil)
         (gptel-agent-harness-tools--orig-grep nil)
