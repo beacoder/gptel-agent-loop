@@ -553,7 +553,6 @@ Agent definition files in these directories are loaded when the harness is enabl
           gptel-agent-harness-context-trigger 0.70
           gptel-agent-harness-auto-save-session t
           gptel-agent-harness-verbose t)
-    (gptel-agent-harness-mode 1)
     (require 'gptel-context)
     ;; add task-completion-rules into llm context
     (gptel-add-file
@@ -561,7 +560,11 @@ Agent definition files in these directories are loaded when the harness is enabl
       "task-completion-rules.md"
       (file-name-directory
        (or (locate-library "gptel-agent-harness")
-           (error "gptel‑agent‑harness not found")))))))
+           (error "gptel‑agent‑harness not found")))))
+    (gptel-agent-harness-mode 1)
+    (gptel-agent-update)
+    (add-to-list 'gptel-agent-harness-context-windows
+                 '("openai/gpt-oss-120b" . 128000))))
 ```
 
 ---
