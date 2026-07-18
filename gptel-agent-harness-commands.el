@@ -132,9 +132,4 @@ If region is active, the selected text is sent as initial context."
       gptel-buf)))
 
 (provide 'gptel-agent-harness-commands)
-
-;; Local Variables:
-;; package-lint-main-file: "/home/huming/.emacs.d/site-lisp/gptel-agent-harness.el"
-;; End:
-
 ;;; gptel-agent-harness-commands.el ends here
