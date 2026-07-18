@@ -1,8 +1,6 @@
 # gptel-agent-harness
 
-Agent execution harness for `gptel-agent`.
-
-`gptel-agent-harness` improves the reliability of gptel agent sessions by providing:
+`gptel-agent-harness` is an extension to the excellent `gptel-agent'，it provides `gptel-agent' by providing the following:
 
 1. **Completion supervision**
 
