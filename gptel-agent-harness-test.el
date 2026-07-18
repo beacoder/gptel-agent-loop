@@ -72,7 +72,29 @@
     (fset 'gptel--fsm-next (lambda (_machine) nil)))
   (unless (fboundp 'gptel-make-fsm)
     (fset 'gptel-make-fsm
-          (lambda (&rest args) (list :info (plist-get args :info))))))
+          (lambda (&rest args) (list :info (plist-get args :info)))))
+  (unless (fboundp 'gptel-fsm-handlers)
+    (fset 'gptel-fsm-handlers (lambda (fsm) (plist-get fsm :handlers))))
+  (with-no-warnings
+    (unless (boundp 'gptel-send--handlers)
+      (setq gptel-send--handlers 'gptel-send--handlers)))
+  (unless (fboundp 'gptel--inject-prompt)
+    (fset 'gptel--inject-prompt
+          (lambda (_backend data msg)
+            (let* ((msgs (or (plist-get data :messages) []))
+                   (new-msgs (vconcat msgs (vector msg))))
+              (plist-put data :messages new-msgs)))))
+  (unless (fboundp 'gptel-abort)
+    (fset 'gptel-abort (lambda (&optional _buf) nil)))
+  (unless (fboundp 'gptel-agent-compact)
+    (fset 'gptel-agent-compact
+          (lambda (_prompt _callback)
+            (when (functionp (cadr _callback))
+              (funcall (cadr _callback))))))
+  (unless (fboundp 'gptel-send)
+    (fset 'gptel-send (lambda () nil)))
+  (unless (fboundp 'gptel--fsm-transition)
+    (fset 'gptel--fsm-transition (lambda (_machine &optional _new-state) nil))))
 
 ;;;; Test Helpers
 
@@ -94,9 +116,17 @@
        (when (file-directory-p ,dir-var)
          (delete-directory ,dir-var t)))))
 
-(defun gptel-agent-harness-test--make-fsm (buf &rest data-plist)
-  "Create a fake FSM with BUF and DATA-PLIST as the :data payload."
-  (gptel-make-fsm :info (list :buffer buf :data data-plist)))
+(defun gptel-agent-harness-test--make-fsm (buf &rest plist)
+  "Create a fake FSM with BUF.
+PLIST keys `:tools' and `:handlers' are placed in both the FSM info
+and the `:data' payload so all functions (token estimation, agentic-p,
+top-level-p) see them."
+  (let* ((tools (plist-get plist :tools))
+         (handlers (plist-get plist :handlers))
+         (info-plist `(:buffer ,buf :data ,(copy-sequence plist))))
+    (when tools (plist-put info-plist :tools tools))
+    (gptel-make-fsm :info info-plist
+                    :handlers (or handlers 'test-handlers))))
 
 (defun gptel-agent-harness-test--setup-gptel-buffer (buf &optional proj-dir)
   "Set up BUF as a gptel buffer with optional PROJ-DIR."
@@ -159,32 +189,20 @@
 
 ;;;; Nudge Counter Tests
 
-(ert-deftest gptel-agent-harness-test-nudge-counter ()
-  "Test nudge count increment, get, and reset via fake FSM."
-  (gptel-agent-harness-test--with-buffer buf
-    (cl-letf (((symbol-function 'gptel-agent-harness--buffer)
-               (lambda (_fsm) buf)))
-      (let ((fsm 'ignored))
-        (should (= (gptel-agent-harness--get-nudges fsm) 0))
-        (gptel-agent-harness--inc-nudges fsm)
-        (should (= (gptel-agent-harness--get-nudges fsm) 1))
-        (gptel-agent-harness--inc-nudges fsm)
-        (should (= (gptel-agent-harness--get-nudges fsm) 2))
-        (gptel-agent-harness--reset-nudges fsm)
-        (should (= (gptel-agent-harness--get-nudges fsm) 0))))))
-
 (ert-deftest gptel-agent-harness-test-can-nudge-p ()
-  "Test nudge budget check."
+  "Test nudge budget check, inc, get, and reset."
   (gptel-agent-harness-test--with-buffer buf
     (cl-letf (((symbol-function 'gptel-agent-harness--buffer)
                (lambda (_fsm) buf)))
       (let ((fsm 'ignored)
             (gptel-agent-harness-max-nudges 2))
-        (should (gptel-agent-harness--can-nudge-p fsm))
+        (should (= (gptel-agent-harness--get-nudges fsm) 0))
         (gptel-agent-harness--inc-nudges fsm)
         (should (gptel-agent-harness--can-nudge-p fsm))
         (gptel-agent-harness--inc-nudges fsm)
-        (should-not (gptel-agent-harness--can-nudge-p fsm))))))
+        (should-not (gptel-agent-harness--can-nudge-p fsm))
+        (gptel-agent-harness--reset-nudges fsm)
+        (should (= (gptel-agent-harness--get-nudges fsm) 0))))))
 
 ;;;; Context Token Estimation from FSM Data
 
@@ -428,7 +446,11 @@
 ;;;; Session Management Tests
 
 (ert-deftest gptel-agent-harness-test-session-file-naming ()
-  "Verify session file name includes timestamp and project info."
+  "Verify session file naming: nil without `gptel-mode', naming with project."
+  ;; nil when gptel-mode is off
+  (with-temp-buffer
+    (setq-local gptel-mode nil)
+    (should (null (gptel-agent-harness--session-file))))
   (gptel-agent-harness-test--with-temp-dir temp-dir
     (let ((gptel-agent-harness-session-dir temp-dir))
       (gptel-agent-harness-test--with-buffer buf
@@ -441,13 +463,6 @@
             (should (string-suffix-p ".md" basename))
             (should (string-match-p "[0-9]\\{12\\}" basename))
             (should (string-prefix-p temp-dir file))))))))
-
-(ert-deftest gptel-agent-harness-test-session-file-nil-when-not-gptel-mode ()
-  "Ensure session-file returns nil if `gptel-mode' is off."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (setq-local gptel-mode nil)
-      (should (null (gptel-agent-harness--session-file))))))
 
 (ert-deftest gptel-agent-harness-test-auto-save-and-restore ()
   "Test auto-save creates a file with local variables and restore loads them."
@@ -564,43 +579,29 @@
 ;;;; Token Calibration Tests
 
 (ert-deftest gptel-agent-harness-test-calibration-updates-ratio ()
-  "Test that calibration factor is updated from `gptel--token-usage' (input only)."
+  "Test calibration factor: normal update, clamping, and no-op."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (setq-local gptel-agent-harness--token-calibration 1.0)
       (setq-local gptel-agent-harness--last-raw-estimate 100)
-      ;; Simulate gptel reporting 150 input tokens (output is ignored)
+      ;; Normal: 150 input / 100 estimate = 1.5
       (setq-local gptel--token-usage (list (list :input 150 :output 20) nil))
       (gptel-agent-harness--update-token-calibration)
-      ;; 150 / 100 = 1.5
-      (should (= gptel-agent-harness--token-calibration 1.5)))))
-
-(ert-deftest gptel-agent-harness-test-calibration-clamped ()
-  "Test that calibration factor is clamped to [0.5, 3.0]."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (setq-local gptel-agent-harness--token-calibration 1.0)
-      (setq-local gptel-agent-harness--last-raw-estimate 100)
-      ;; Extremely high input (800) → 8x → clamped to 3.0
+      (should (= gptel-agent-harness--token-calibration 1.5))
+      ;; Clamp high: 800 / 100 = 8 → clamped to 3.0
       (setq-local gptel--token-usage (list (list :input 800 :output 200) nil))
       (gptel-agent-harness--update-token-calibration)
       (should (= gptel-agent-harness--token-calibration 3.0))
-      ;; Extremely low input (5) → 0.05x → clamped to 0.5
+      ;; Clamp low: 5 / 100 = 0.05 → clamped to 0.5
       (setq-local gptel--token-usage (list (list :input 5 :output 5) nil))
       (gptel-agent-harness--update-token-calibration)
-      (should (= gptel-agent-harness--token-calibration 0.5)))))
-
-(ert-deftest gptel-agent-harness-test-calibration-no-op ()
-  "Test that calibration is unchanged when usage or estimate is nil."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      ;; No usage data
+      (should (= gptel-agent-harness--token-calibration 0.5))
+      ;; No-op when usage is nil
       (setq-local gptel-agent-harness--token-calibration 1.5)
-      (setq-local gptel-agent-harness--last-raw-estimate 100)
       (setq-local gptel--token-usage nil)
       (gptel-agent-harness--update-token-calibration)
       (should (= gptel-agent-harness--token-calibration 1.5))
-      ;; No raw estimate
+      ;; No-op when raw estimate is nil
       (setq-local gptel-agent-harness--last-raw-estimate nil)
       (setq-local gptel--token-usage (list (list :input 120 :output 50) nil))
       (gptel-agent-harness--update-token-calibration)
@@ -729,6 +730,240 @@
           (gptel-agent-harness-mode 1)
         (gptel-agent-harness-mode -1)))))
 
-(provide 'gptel-agent-harness-test)
+;;;; FSM Helper Tests (buffer, agentic-p, top-level-p, with-fsm-buffer)
 
+(ert-deftest gptel-agent-harness-test-fsm-helpers ()
+  "Test `--buffer', `--agentic-p', `--top-level-p', `--with-fsm-buffer'."
+  (gptel-agent-harness-test--with-buffer buf
+    (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                  :handlers gptel-send--handlers
+                  :tools (vector (list :type "function" :function (list :name "test")))
+                  :system "sys"
+                  :messages (vector))))
+      (should (eq (gptel-agent-harness--buffer fsm) buf))
+      (should (gptel-agent-harness--agentic-p fsm))
+      (should (gptel-agent-harness--top-level-p fsm))
+      (let ((result nil))
+        (gptel-agent-harness--with-fsm-buffer fsm
+          (setq result (current-buffer)))
+        (should (eq result buf)))
+      ;; Non-agentic (no tools)
+      (let ((fsm2 (gptel-agent-harness-test--make-fsm buf :system "sys")))
+        (should-not (gptel-agent-harness--agentic-p fsm2)))
+      ;; Non-top-level (different handlers)
+      (let ((fsm3 (gptel-agent-harness-test--make-fsm buf
+                    :handlers 'sub-agent-handlers)))
+        (should-not (gptel-agent-harness--top-level-p fsm3))))))
+
+;;;; Nudge and Compaction Helpers
+
+(ert-deftest gptel-agent-harness-test-nudge ()
+  "Test `--nudge' injects message and bumps counter."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             (lambda (_backend data msg)
+               (let* ((msgs (or (plist-get data :messages) []))
+                      (new-msgs (vconcat msgs (vector msg))))
+                 (plist-put data :messages new-msgs)))))
+    (gptel-agent-harness-test--with-buffer buf
+      (let* ((messages (vector (list :role "user" :content "hello")))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :tools (vector (list :type "function"))
+                    :messages messages))
+             (orig-count (gptel-agent-harness--get-nudges fsm)))
+        (gptel-agent-harness--nudge fsm)
+        (should (= (gptel-agent-harness--get-nudges fsm) (1+ orig-count)))))))
+
+(ert-deftest gptel-agent-harness-test-need-compaction-p ()
+  "Test `--need-compaction-p' with all combinations."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq gptel-agent-harness--context-ratio 0.80)
+      (setq gptel-agent-harness--compacting-p nil))
+    (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                 :handlers gptel-send--handlers
+                 :tools (vector (list :type "function")))))
+      ;; All conditions met
+      (should (gptel-agent-harness--need-compaction-p fsm))
+      ;; No agentic (no tools)
+      (let ((fsm2 (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers)))
+        (should-not (gptel-agent-harness--need-compaction-p fsm2)))
+      ;; Not top-level
+      (let ((fsm3 (gptel-agent-harness-test--make-fsm buf
+                    :handlers 'sub-agent
+                    :tools (vector (list :type "function")))))
+        (should-not (gptel-agent-harness--need-compaction-p fsm3)))
+      ;; Below trigger
+      (with-current-buffer buf
+        (setq gptel-agent-harness--context-ratio 0.50))
+      (should-not (gptel-agent-harness--need-compaction-p fsm))
+      ;; Compact already in progress
+      (with-current-buffer buf
+        (setq gptel-agent-harness--context-ratio 0.80)
+        (setq gptel-agent-harness--compacting-p t))
+      (should-not (gptel-agent-harness--need-compaction-p fsm)))))
+
+(ert-deftest gptel-agent-harness-test-recent-user-requests ()
+  "Test `--recent-user-requests' filters nudge messages."
+  (gptel-agent-harness-test--with-buffer buf
+    (let* ((nudge-msg gptel-agent-harness-nudge-message)
+           (messages (vector
+                      (list :role "user" :content "request 1")
+                      (list :role "assistant" :content "reply 1")
+                      (list :role "user" :content nudge-msg)
+                      (list :role "assistant" :content "reply 2")
+                      (list :role "user" :content "request 2")))
+           (fsm (gptel-agent-harness-test--make-fsm buf
+                  :messages messages)))
+      (let ((requests (gptel-agent-harness--recent-user-requests fsm)))
+        (should (= (length requests) 2))
+        (should (equal (nth 0 requests) "request 1"))
+        (should (equal (nth 1 requests) "request 2"))))))
+
+(ert-deftest gptel-agent-harness-test-current-round-content ()
+  "Test `--current-round-content' extracts from last response to end."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (insert "earlier response text")
+      (put-text-property 1 (point-max) 'gptel 'response)
+      (insert "\n---separator---\n")
+      (let ((gap-end (point-max)))
+        (insert "latest response")
+        (put-text-property gap-end (point-max) 'gptel 'response))
+      (should (equal (gptel-agent-harness--current-round-content)
+                     "latest response"))
+      ;; No response property → nil
+      (erase-buffer)
+      (insert "plain text")
+      (should-not (gptel-agent-harness--current-round-content)))))
+
+;;;; Transition Advice (Central Supervisor)
+
+(ert-deftest gptel-agent-harness-test-transition-advice ()
+  "Test `--transition-advice': nudge, compact, tool-reset, and passthrough paths."
+  (cl-letf (((symbol-function 'gptel--inject-prompt)
+             (lambda (_backend data msg)
+               (let* ((msgs (or (plist-get data :messages) []))
+                      (new-msgs (vconcat msgs (vector msg))))
+                 (plist-put data :messages new-msgs)))))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq gptel-agent-harness--context-ratio 0.50)
+        (setq gptel-agent-harness--compacting-p nil)
+        (setq gptel-agent-harness--nudge-count 0))
+      (let* ((tools (vector (list :type "function" :function (list :name "test"))))
+             (fsm (gptel-agent-harness-test--make-fsm buf
+                    :handlers gptel-send--handlers
+                    :tools tools
+                    :system "sys"
+                    :messages (vector (list :role "user" :content "hi"))))
+             (orig-called nil))
+        ;; 1) Terminal state → nudge path → orig-fn called with WAIT
+        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (gptel-agent-harness--transition-advice orig-fn fsm 'DONE)
+          (should (eq orig-called 'WAIT))
+          (should (= (gptel-agent-harness--get-nudges fsm) 1)))
+        ;; 2) WAIT state (no compaction needed) → pass through
+        (setq orig-called nil)
+        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (gptel-agent-harness--transition-advice orig-fn fsm 'WAIT)
+          (should (eq orig-called 'WAIT)))
+        ;; 3) TOOL state (top-level) → pass through + reset nudges
+        (with-current-buffer buf (setq gptel-agent-harness--nudge-count 5))
+        (setq orig-called nil)
+        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (gptel-agent-harness--transition-advice orig-fn fsm 'TOOL)
+          (should (eq orig-called 'TOOL))
+          (should (= (gptel-agent-harness--get-nudges fsm) 0)))
+        ;; 4) Terminal state → non-agentic → pass through
+        (let* ((non-agent-fsm (gptel-agent-harness-test--make-fsm buf
+                                :handlers gptel-send--handlers
+                                :system "sys"
+                                :messages (vector (list :role "user" :content "hi"))))
+               (orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (setq orig-called nil)
+          (gptel-agent-harness--transition-advice orig-fn non-agent-fsm 'DONE)
+          (should (eq orig-called 'DONE)))
+        ;; 5) Terminal → nudge exhausted → pass through
+        (with-current-buffer buf
+          (setq gptel-agent-harness--nudge-count gptel-agent-harness-max-nudges))
+        (setq orig-called nil)
+        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (gptel-agent-harness--transition-advice orig-fn fsm 'ERRS)
+          (should (eq orig-called 'ERRS)))
+        ;; 6) Default path (non-terminal, non-TOOL/TPRE) → pass through
+        (setq orig-called nil)
+        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (gptel-agent-harness--transition-advice orig-fn fsm 'TYPE)
+          (should (eq orig-called 'TYPE)))
+        ;; 7) WAIT with compaction needed → compact returns nil → fallback
+        (with-current-buffer buf
+          (setq gptel-agent-harness--context-ratio 0.80)
+          (setq gptel-agent-harness--compacting-p nil)
+          (setq gptel-agent-harness--nudge-count 0))
+        (cl-letf (((symbol-function 'gptel-agent-compact)
+                   (lambda (&rest _) nil)))
+          (setq orig-called nil)
+          (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+            (gptel-agent-harness--transition-advice orig-fn fsm 'WAIT)
+            (should (eq orig-called 'WAIT))))))))
+
+;;;; Session Setup/Teardown and Misc Helpers
+
+(ert-deftest gptel-agent-harness-test-write-local-vars ()
+  "Test `--write-local-vars' serialization."
+  (with-temp-buffer
+    (gptel-agent-harness--write-local-vars
+     '(("gptel-model" . "test-model")
+       ("gptel-temperature" . 0.7)
+       ("gptel--backend-name" . nil)
+       ("gptel-max-tokens" . 1000)))
+    (goto-char (point-min))
+    (should (search-forward "gptel-model: " nil t))
+    (should (search-forward "\"test-model\"" nil t))
+    (should (search-forward "gptel-temperature: " nil t))
+    (should (search-forward "0.7" nil t))
+    (should (search-forward "gptel-max-tokens: " nil t))
+    (should (search-forward "1000" nil t))
+    (should-not (search-forward "gptel--backend-name" nil t))))
+
+(ert-deftest gptel-agent-harness-test-read-compact-prompt ()
+  "Test `--read-compact-prompt' file I/O."
+  (let ((gptel-agent-harness-compact-prompt-file
+         (make-temp-file "compact-prompt-" nil ".txt" "compact this please")))
+    (unwind-protect
+        (should (equal (gptel-agent-harness--read-compact-prompt)
+                       "compact this please"))
+      (delete-file gptel-agent-harness-compact-prompt-file)))
+  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
+    (should-error (gptel-agent-harness--read-compact-prompt))))
+
+(ert-deftest gptel-agent-harness-test-setup-teardown-session ()
+  "Test `--setup-session' and `--teardown-session' hook management."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness--setup-session)
+      (should (memq #'gptel-agent-harness--auto-save-session
+                    gptel-post-response-functions))
+      (should (memq #'gptel-agent-harness--update-token-calibration
+                    gptel-post-response-functions))
+      (gptel-agent-harness--teardown-session)
+      (should-not (memq #'gptel-agent-harness--auto-save-session
+                        gptel-post-response-functions))
+      (should-not (memq #'gptel-agent-harness--update-token-calibration
+                        gptel-post-response-functions)))))
+
+(ert-deftest gptel-agent-harness-test-teardown-mode-line ()
+  "Test `--teardown-mode-line' removes construct."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness--setup-mode-line)
+      (when (boundp 'which-func-mode) (setq-local which-func-mode t))
+      (should (memq 'gptel-agent-harness--mode-line-construct
+                    mode-line-misc-info))
+      (gptel-agent-harness--teardown-mode-line)
+      (should-not (memq 'gptel-agent-harness--mode-line-construct
+                        mode-line-misc-info)))))
+
+(provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
