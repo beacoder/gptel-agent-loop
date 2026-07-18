@@ -1,6 +1,6 @@
 # gptel-agent-harness
 
-`gptel-agent-harness` is an extension to the excellent `gptel-agent'，it provides `gptel-agent' by providing the following:
+`gptel-agent-harness` is an extension to the excellent `gptel-agent`，it improve `gptel-agent` by providing:
 
 1. **Completion supervision**
 
