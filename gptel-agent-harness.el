@@ -65,6 +65,7 @@
 (require 'gptel-agent)
 (require 'gptel-agent-harness-tools)
 (require 'gptel-agent-harness-agent)
+(require 'gptel-agent-harness-commands)
 (require 'cl-lib)
 
 ;;;; User Options
