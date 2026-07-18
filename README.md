@@ -28,13 +28,18 @@ Agent execution harness for `gptel-agent`.
 
 4. **Improved tools**
 
-   * Enhanced `glob` tool using `git ls-files` for fast, `.gitignore`-aware file listing in git repos.
-   * Enhanced `grep` tool using `git grep -e` for robust regex handling.
+   * Enhanced `glob` tool using `git ls-files` for fast, `.gitignore`-aware file listing in git repos, falling back to `tree`.
+   * Enhanced `grep` tool using `git grep -e` for robust regex handling, with automatic fallback to `ripgrep` or `grep`.
 
 5. **Custom agent definition**
 
-   * Provides `gptel-opencode-agent` which has behavior and capabilities similar to opencode's default agent.
-   * Uses agent definitions from `gptel-agent-harness-extras-agent-dirs`.
+   * Provides `gptel-opencode-agent` with OpenCode similar behavior and capabilities
+   * Uses agent definitions from `gptel-agent-harness-agent-dirs`.
+
+6. **Project initialization**
+
+   * `gptel-agent-harness-initialize` creates/updates `AGENTS.md` for a project via a dedicated LLM session.
+   * Uses the initialize prompt from `prompts/initialize.txt`.
 
 The goal is to make gptel-agent behave more like a reliable coding agent, such as OpenCode.
 
@@ -251,15 +256,15 @@ Default model table:
 
 ```elisp
 (setq gptel-agent-harness-context-windows
-      '(("gpt-5" . 400000)
-        ("gpt-5-mini" . 128000)
+      '(("gpt-5-mini" . 128000)
+        ("gpt-5" . 400000)
         ("claude" . 200000)
         ("deepseek-v3" . 128000)
         ("deepseek-v4" . 1000000)
-        ("qwen3" . 131072)
         ("qwen3.5" . 131072)
+        ("qwen3" . 131072)
         ("glm-5.2" . 1000000)
-        ("glm-5.1" . 256000)
+        ("glm-5.1" . 128000)
         ("kimi-k2.7" . 256000)
         ("kimi" . 128000)))
 ```
@@ -282,7 +287,7 @@ You can extend the table:
 
 ## Compaction Prompt
 
-Copied compaction prompt from opencode, it preserves:
+Read from `prompts/compact.txt`, copied from OpenCode's compaction prompt. It preserves:
 
 * file paths,
 * identifiers,
@@ -293,12 +298,8 @@ Copied compaction prompt from opencode, it preserves:
 
 It removes stale information and keeps only context required for continuing the task.
 
-Configure with:
-
-```elisp
-(setq gptel-agent-harness-compact-prompt
-      "Your custom compaction instructions...")
-```
+The prompt is read from `gptel-agent-harness-compact-prompt-file` (a constant).
+To customize, edit the `prompts/compact.txt` file directly.
 
 ---
 
@@ -471,7 +472,7 @@ No configuration needed — calibration happens automatically.
 
 # Improved Tools
 
-`gptel-agent-harness` includes enhanced versions of the `glob` and `grep` tools from `gptel-agent-harness-extras`.
+`gptel-agent-harness` includes enhanced versions of the `glob` and `grep` tools.
 
 ## Enhanced Glob Tool
 
@@ -501,7 +502,7 @@ It automatically chooses the best available grepper:
 
 # Custom Agent Definition
 
-`gptel-agent-harness` provides `gptel-opencode-agent`, it reuses the system prompt from opencode, and is designed to provide the same behavior and capabilities as the original opencode agent within Emacs.
+`gptel-agent-harness` provides `gptel-opencode-agent`, it reuses the system prompt from OpenCode, and is designed to provide the same behavior and capabilities as the original OpenCode agent within Emacs.
 
 ## Usage
 
@@ -519,26 +520,46 @@ Or from within gptel:
 
 ## Configuration
 
-### `gptel-agent-harness-extras-agent-dirs`
+### `gptel-agent-harness-agent-dirs`
 
 Directories containing agent definition files.
 
 Default:
 
 ```elisp
-(setq gptel-agent-harness-extras-agent-dirs
+(setq gptel-agent-harness-agent-dirs
       (list (expand-file-name "agents" user-emacs-directory)))
 ```
 
 Example:
 
 ```elisp
-(setq gptel-agent-harness-extras-agent-dirs
+(setq gptel-agent-harness-agent-dirs
       '("~/my-custom-agents"
         (expand-file-name "agents" user-emacs-directory)))
 ```
 
 Agent definition files in these directories are loaded when the harness is enabled.
+
+---
+
+# Project Initialization
+
+`gptel-agent-harness-initialize` creates or updates `AGENTS.md` for a project.
+
+It launches a dedicated gptel buffer with agent tools enabled and uses the
+initialize prompt from `prompts/initialize.txt` to guide the LLM in analyzing
+the repository and generating AGENTS.md.
+
+```
+M-x gptel-agent-harness-initialize
+```
+
+When called interactively, it detects the current project root and prompts for
+confirmation.  You can provide extra instructions via the `$ARGUMENTS`
+placeholder in the initialize prompt.
+
+If a region is active when calling, the selected text is sent as initial context.
 
 ---
 
