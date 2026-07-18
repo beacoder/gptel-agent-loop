@@ -859,19 +859,19 @@ top-level-p) see them."
                     :messages (vector (list :role "user" :content "hi"))))
              (orig-called nil))
         ;; 1) Terminal state → nudge path → orig-fn called with WAIT
-        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+        (let ((orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'DONE)
           (should (eq orig-called 'WAIT))
           (should (= (gptel-agent-harness--get-nudges fsm) 1)))
         ;; 2) WAIT state (no compaction needed) → pass through
         (setq orig-called nil)
-        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+        (let ((orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'WAIT)
           (should (eq orig-called 'WAIT)))
         ;; 3) TOOL state (top-level) → pass through + reset nudges
         (with-current-buffer buf (setq gptel-agent-harness--nudge-count 5))
         (setq orig-called nil)
-        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+        (let ((orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'TOOL)
           (should (eq orig-called 'TOOL))
           (should (= (gptel-agent-harness--get-nudges fsm) 0)))
@@ -880,7 +880,7 @@ top-level-p) see them."
                                 :handlers gptel-send--handlers
                                 :system "sys"
                                 :messages (vector (list :role "user" :content "hi"))))
-               (orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+               (orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
           (setq orig-called nil)
           (gptel-agent-harness--transition-advice orig-fn non-agent-fsm 'DONE)
           (should (eq orig-called 'DONE)))
@@ -888,12 +888,12 @@ top-level-p) see them."
         (with-current-buffer buf
           (setq gptel-agent-harness--nudge-count gptel-agent-harness-max-nudges))
         (setq orig-called nil)
-        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+        (let ((orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'ERRS)
           (should (eq orig-called 'ERRS)))
         ;; 6) Default path (non-terminal, non-TOOL/TPRE) → pass through
         (setq orig-called nil)
-        (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+        (let ((orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'TYPE)
           (should (eq orig-called 'TYPE)))
         ;; 7) WAIT with compaction needed → compact returns nil → fallback
@@ -904,7 +904,7 @@ top-level-p) see them."
         (cl-letf (((symbol-function 'gptel-agent-compact)
                    (lambda (&rest _) nil)))
           (setq orig-called nil)
-          (let ((orig-fn (lambda (_m &optional _ns) (setq orig-called _ns))))
+          (let ((orig-fn (lambda (&optional _m _ns) (setq orig-called _ns))))
             (gptel-agent-harness--transition-advice orig-fn fsm 'WAIT)
             (should (eq orig-called 'WAIT))))))))
 
