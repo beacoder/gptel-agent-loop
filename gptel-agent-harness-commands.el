@@ -94,7 +94,7 @@ If region is active, the selected text is sent as initial context."
   (gptel--update-status " Initializing..." 'warning)
   (let* ((raw-prompt (gptel-agent-harness-commands--read-initialize-prompt))
          (prompt-content (gptel-agent-harness-commands--substitute-placeholders
-                         raw-prompt project-dir extra))
+                          raw-prompt project-dir extra))
          (preset-name (cl-gensym "gptel-agent-harness-init-"))
          (proj-name (file-name-nondirectory
                      (directory-file-name project-dir)))
@@ -126,8 +126,6 @@ If region is active, the selected text is sent as initial context."
           (insert (format
                    "Analyze the repository at %s and create/update AGENTS.md."
                    project-dir))
-          (when extra
-            (insert (format "\n\nAdditional instructions: %s" extra)))
           (insert "\n"))
         (gptel-send))
       gptel-buf)))
