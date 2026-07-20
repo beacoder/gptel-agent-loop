@@ -29,6 +29,7 @@
 
    * Enhanced `glob` tool using `git ls-files` for fast, `.gitignore`-aware file listing in git repos, falling back to `tree`.
    * Enhanced `grep` tool using `git grep -e` for robust regex handling, with automatic fallback to `ripgrep` or `grep`.
+   * `Question` tool that allows the LLM to ask the user questions during execution via `completing-read`, supporting single/multi-select and free-text input.
 
 5. **Custom agent definition**
 
@@ -501,6 +502,68 @@ It automatically chooses the best available grepper:
 2. `ripgrep` (`rg`)
 3. Standard `grep`
 
+## Question Tool
+
+The `Question` tool allows the LLM to ask you questions during agentic execution — for clarification, preferences, or decisions — without stopping the session.
+
+### How It Works
+
+```
+LLM needs user input
+        |
+        v
+emits Question tool call
+        |
+        v
+completing-read prompt appears in Emacs minibuffer
+        |
+        v
+user selects option or types free text
+        |
+        v
+answer returned to LLM, execution continues
+```
+
+### Capabilities
+
+* **Single-select**: User picks one option via `completing-read`.
+* **Multi-select**: User picks multiple options via `completing-read-multiple` (set `multiple: true`).
+* **Free-text**: If no options are provided, prompts with `read-string`.
+* **Custom option**: By default, a "[Type your own answer]" choice is appended. Set `custom: false` to restrict to predefined options only.
+* **Batch questions**: Multiple questions can be asked in a single tool call.
+
+### Example Tool Call (from the LLM)
+
+```json
+{
+  "name": "Question",
+  "arguments": {
+    "questions": [
+      {
+        "question": "Which testing framework should I use?",
+        "options": ["pytest (Recommended)", "unittest", "nose2"]
+      },
+      {
+        "question": "What features should I include?",
+        "options": ["logging", "type hints", "docstrings"],
+        "multiple": true
+      },
+      {
+        "question": "What is the target Python version?"
+      }
+    ]
+  }
+}
+```
+
+### Encouraging Usage
+
+The LLM will only call this tool if it knows it's available and appropriate. To encourage proactive use, add guidance in your agent's system prompt:
+
+```text
+When requirements are ambiguous or multiple valid approaches exist, use the Question tool to ask the user before proceeding. Do not guess.
+```
+
 ---
 
 # Custom Agent Definition
@@ -599,7 +662,7 @@ If a region is active when calling, the selected text is sent as initial context
 site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context management, compaction, mode-line
 ├── gptel-agent-harness-session.el  # Session: auto-save, title generation, preview, restore
-├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools
+├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
 ├── gptel-agent-harness-commands.el # Commands (project initialization)
 ├── gptel-agent-harness-test.el     # ERT test suite
