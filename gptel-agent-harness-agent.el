@@ -4,10 +4,6 @@
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-harness
-;; Package-Version: 0.3
-;; Package-Requires: ((emacs "29.1") (gptel-agent "0.0.1"))
-;; Package-Keywords: programming, convenience, ai, agent
-;; Package-Description: Agent definition for gptel-agent-harness.
 ;;
 ;; This file is not part of GNU Emacs.
 
@@ -56,7 +52,11 @@
 ;;;; Agent Directory
 
 (defcustom gptel-agent-harness-agent-dirs
-  (list (expand-file-name "agents" user-emacs-directory))
+  (list (expand-file-name
+         "agents"
+         (file-name-directory
+          (or (locate-library "gptel-agent-harness")
+              (error "Failed to find gptel-agent-harness")))))
   "Directories containing agent definition files for the harness.
 Replaces `gptel-agent-dirs' when the harness is enabled."
   :type '(repeat directory)
@@ -123,4 +123,8 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
     (setq gptel-agent-harness-agent--orig-fn nil)))
 
 (provide 'gptel-agent-harness-agent)
+
+;; Local Variables:
+;; package-lint-main-file: "gptel-agent-harness.el"
+;; End:
 ;;; gptel-agent-harness-agent.el ends here
