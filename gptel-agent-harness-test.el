@@ -37,6 +37,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'gptel-agent-harness)
 
 ;;;; Stubs — minimal gptel API surface needed for testing
@@ -94,7 +95,18 @@
   (unless (fboundp 'gptel-send)
     (fset 'gptel-send (lambda () nil)))
   (unless (fboundp 'gptel--fsm-transition)
-    (fset 'gptel--fsm-transition (lambda (_machine &optional _new-state) nil))))
+    (fset 'gptel--fsm-transition (lambda (_machine &optional _new-state) nil)))
+  ;; Stubs for gptel-agent-harness-commands module
+  (unless (boundp 'gptel-agent-mode) (defvar gptel-agent-mode nil))
+  (unless (fboundp 'gptel)
+    (fset 'gptel (lambda (buf-name &optional _prompt _initial _interactive)
+                   (get-buffer-create buf-name))))
+  (unless (fboundp 'gptel-get-tool)
+    (fset 'gptel-get-tool (lambda (name) (intern (format "gptel-agent-harness-test--tool-%s" name)))))
+  (unless (fboundp 'gptel-agent-update)
+    (fset 'gptel-agent-update (lambda () nil)))
+  (unless (fboundp 'gptel--update-status)
+    (fset 'gptel--update-status (lambda (&rest _) nil))))
 
 ;;;; Test Helpers
 
@@ -993,7 +1005,7 @@ top-level-p) see them."
 ;;;; Question Tool Tests
 
 (ert-deftest gptel-agent-harness-test-question-ask-one-single-select ()
-  "Test single-select question via completing-read."
+  "Test single-select question via `completing-read'."
   (cl-letf (((symbol-function 'completing-read)
              (lambda (_prompt choices &rest _) (car choices))))
     (let ((result (gptel-agent-harness-tools--ask-one
@@ -1001,7 +1013,7 @@ top-level-p) see them."
       (should (equal result '("alpha"))))))
 
 (ert-deftest gptel-agent-harness-test-question-ask-one-multi-select ()
-  "Test multi-select question via completing-read-multiple."
+  "Test multi-select question via `completing-read-multiple'."
   (cl-letf (((symbol-function 'completing-read-multiple)
              (lambda (_prompt choices &rest _)
                (list (nth 0 choices) (nth 1 choices)))))
@@ -1018,7 +1030,7 @@ top-level-p) see them."
       (should (equal result '("my custom answer"))))))
 
 (ert-deftest gptel-agent-harness-test-question-ask-one-custom-option ()
-  "Test selecting the custom free-text option triggers read-string."
+  "Test selecting the custom free-text option triggers `read-string'."
   (cl-letf (((symbol-function 'completing-read)
              (lambda (_prompt choices &rest _)
                ;; Simulate user selecting the custom option (last item)
@@ -1084,6 +1096,124 @@ top-level-p) see them."
     ;; Unregister
     (gptel-agent-harness-tools--unregister-question)
     (should-not gptel-agent-harness-tools--question-tool)))
+
+;;;; Commands Module Tests
+
+(ert-deftest gptel-agent-harness-test-read-review-prompt ()
+  "Test `gptel-agent-harness-commands--read-review-prompt' reads file content."
+  (let ((temp-file (make-temp-file "review-" nil ".txt" "test review prompt")))
+    (let ((gptel-agent-harness-commands--review-prompt-file temp-file))
+      (should (equal (gptel-agent-harness-commands--read-review-prompt)
+                     "test review prompt")))
+    (delete-file temp-file))
+  (let ((gptel-agent-harness-commands--review-prompt-file "/nonexistent/review.txt"))
+    (should-error (gptel-agent-harness-commands--read-review-prompt))))
+
+(ert-deftest gptel-agent-harness-test-read-initialize-prompt ()
+  "Test `gptel-agent-harness-commands--read-initialize-prompt' reads file content."
+  (let ((temp-file (make-temp-file "initialize-" nil ".txt" "initialize prompt")))
+    (let ((gptel-agent-harness-commands--initialize-prompt-file temp-file))
+      (should (equal (gptel-agent-harness-commands--read-initialize-prompt)
+                     "initialize prompt")))
+    (delete-file temp-file))
+  (let ((gptel-agent-harness-commands--initialize-prompt-file "/nonexistent/init.txt"))
+    (should-error (gptel-agent-harness-commands--read-initialize-prompt))))
+
+(ert-deftest gptel-agent-harness-test-substitute-placeholders ()
+  "Test `gptel-agent-harness-commands--substitute-placeholders' replaces ${path} and $ARGUMENTS."
+  (let ((template "Review files in ${path} with args: $ARGUMENTS"))
+    (should (equal (gptel-agent-harness-commands--substitute-placeholders
+                    template "/tmp/project" "commit-hash")
+                   "Review files in /tmp/project with args: commit-hash")))
+  ;; $ARGUMENTS is nil → empty string
+  (should (equal (gptel-agent-harness-commands--substitute-placeholders
+                  "Args: $ARGUMENTS" "/tmp" nil)
+                 "Args: "))
+  ;; Multiple occurrences
+  (should (equal (gptel-agent-harness-commands--substitute-placeholders
+                  "${path} ... ${path}" "/a" nil)
+                 "/a ... /a")))
+
+(ert-deftest gptel-agent-harness-test-review-creates-dedicated-buffer ()
+  "Test review command creates a *gptel-agent-review* buffer in non-agent mode."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _) "")))
+    (let ((buf (gptel-agent-harness-commands-review "")))
+      (should (buffer-live-p buf))
+      (should (string-match-p "\\*gptel-agent-review\\*" (buffer-name buf)))
+      (with-current-buffer buf
+        (should gptel-use-tools)
+        (should (listp gptel-tools))
+        (should (eq gptel-temperature 0)))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-review-reuses-agent-buffer ()
+  "Test review reuses the current buffer when in gptel-agent-mode."
+  (gptel-agent-harness-test--with-buffer agent-buf
+    (with-current-buffer agent-buf
+      (markdown-mode)
+      (setq-local gptel-agent-mode t)
+      (gptel-mode 1))
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (&rest _) "")))
+      (with-current-buffer agent-buf
+        (let ((result-buf (gptel-agent-harness-commands-review "")))
+          (should (eq result-buf agent-buf)))))))
+
+(ert-deftest gptel-agent-harness-test-review-sends-arguments ()
+  "Test review command passes $ARGUMENTS through prompt substitution."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _) "abc123")))
+    (let ((buf (gptel-agent-harness-commands-review "abc123")))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (forward-line -1)
+        (should (string-match-p "abc123" (thing-at-point 'line t))))
+      (kill-buffer buf))))
+
+(ert-deftest gptel-agent-harness-test-review-sends-region-content ()
+  "Test review command sends region text as initial context."
+  (gptel-agent-harness-test--with-buffer source-buf
+    (with-current-buffer source-buf
+      (insert "region content for review")
+      (goto-char (point-min))
+      (push-mark (point-max) nil t)
+      (activate-mark))
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (&rest _) "")))
+      (let ((buf (with-current-buffer source-buf
+                   (gptel-agent-harness-commands-review ""))))
+        (with-current-buffer buf
+          (goto-char (point-min))
+          (should (search-forward "region content for review" nil t)))
+        (kill-buffer buf)
+        (with-current-buffer source-buf
+          (deactivate-mark)
+          (pop-mark))))))
+
+(ert-deftest gptel-agent-harness-test-review-sets-system-prompt ()
+  "Test review command sets variable `gptel-system-prompt' from review.txt content."
+  (let ((temp-file (make-temp-file "review-" nil ".txt" "You are a code reviewer.")))
+    (let ((gptel-agent-harness-commands--review-prompt-file temp-file))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) "")))
+        (let ((buf (gptel-agent-harness-commands-review "")))
+          (with-current-buffer buf
+            (should (string-match-p "You are a code reviewer."
+                                    (or gptel-system-prompt ""))))
+          (kill-buffer buf))))
+    (delete-file temp-file)))
+
+(ert-deftest gptel-agent-harness-test-review-no-arguments ()
+  "Test review with nil arguments inserts the default message."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (&rest _) "")))
+    (let ((buf (gptel-agent-harness-commands-review nil)))
+      (with-current-buffer buf
+        (goto-char (point-max))
+        (forward-line -1)
+        (should (string-match-p "Review code changes" (thing-at-point 'line t))))
+      (kill-buffer buf))))
 
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
