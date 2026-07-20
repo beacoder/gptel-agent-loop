@@ -96,7 +96,6 @@ If region is active, the selected text is sent as initial context."
          ;; Set up gptel variables for the new buffer
          (gptel-system-prompt prompt-content)
          (gptel-temperature 0)
-         (gptel-use-tools t)
          (gptel-buf
           (gptel (generate-new-buffer-name
                   (format "*gptel-agent-init:%s*" proj-name))
@@ -104,6 +103,13 @@ If region is active, the selected text is sent as initial context."
     (with-current-buffer gptel-buf
       (setq default-directory project-dir)
       (gptel-agent-update)
+      ;; Enable tools for this buffer
+      (setq-local gptel-use-tools t)
+      (setq-local gptel-tools
+                  (flatten-list
+                   (mapcar #'gptel-get-tool
+                           '("TodoWrite" "Glob" "Grep" "Read" "Insert"
+                             "Edit" "Write" "Mkdir" "Bash" "Skill"))))
       (gptel--update-status " Initializing..." 'warning)
       (unless region-content
         (goto-char (point-max))
