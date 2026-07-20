@@ -494,7 +494,8 @@ top-level-p) see them."
               (should (search-forward "gptel-system-prompt" nil t))
               (should (search-forward "gptel--tool-names" nil t)))
             ;; Test restore — creates a new non-file-visiting buffer
-            (gptel-agent-harness-restore-session file)
+            (cl-letf (((symbol-function 'gptel-agent-update) #'ignore))
+              (gptel-agent-harness-restore-session file))
             (should (derived-mode-p 'markdown-mode))
             (should gptel-mode)
             (should-not buffer-file-name)  ; not visiting a file
@@ -534,7 +535,8 @@ top-level-p) see them."
         (with-temp-buffer
           (insert-file-contents latest)
           (should (search-forward "second" nil t)))
-        (gptel-agent-harness-restore-latest-session)
+        (cl-letf (((symbol-function 'gptel-agent-update) #'ignore))
+          (gptel-agent-harness-restore-latest-session))
         (should (derived-mode-p 'markdown-mode))
         (should-not buffer-file-name)
         (should (string= (buffer-string) "second"))
