@@ -21,6 +21,7 @@
 
    * Auto-saves gptel agent buffers after each LLM response.
    * Stores full session state (model, backend, system prompt, tools, parameters).
+   * Generates meaningful session titles via LLM after first response.
    * Restore any session with `gptel-agent-harness-restore-session` or the most recent one with `gptel-agent-harness-restore-latest-session`.
    * Live preview during session selection.
 
@@ -36,7 +37,7 @@
 
 6. **Project initialization**
 
-   * `gptel-agent-harness-initialize` creates/updates `AGENTS.md` for a project via a dedicated LLM session.
+   * `gptel-agent-harness-commands-initialize` creates/updates `AGENTS.md` for a project via a dedicated LLM session.
    * Uses the initialize prompt from `prompts/initialize.txt`.
 
 The goal is to make gptel-agent behave more like a reliable coding agent, such as OpenCode.
@@ -319,6 +320,8 @@ auto-save buffer + metadata to session dir
 
 Each buffer gets a single timestamped session file on first save. Subsequent saves overwrite the same file with updated content and state.
 
+After the first save, the harness asynchronously generates a meaningful title from the user's first message (using the prompt in `prompts/title.txt`). The session file is then renamed from the generic `project_YYMMDDHHMMSS.md` format to `Generated-Title_YYMMDDHHMMSS.md`. When restored, the title is used as the buffer name (truncated to ~20 chars for mode-line space).
+
 ## Session Directory
 
 ### `gptel-agent-harness-session-dir`
@@ -447,6 +450,8 @@ Default:
 
 The context supervision uses a heuristic token estimate (~4 chars/token for Latin, ~2 chars/token for CJK). This can drift from actual tokenizer behavior.
 
+The estimate covers the full request payload: system prompt, all messages (user, assistant, tool results), tool call arguments, and tool definitions (schemas). It supports all gptel backends (OpenAI, Anthropic, Bedrock, Gemini, OpenAI Responses API).
+
 `gptel-agent-harness` self-calibrates by comparing its estimate to the actual **input** token count reported by the API after each response.
 
 ```
@@ -543,14 +548,14 @@ Agent definition files in these directories are loaded when the harness is enabl
 
 # Project Initialization
 
-`gptel-agent-harness-initialize` creates or updates `AGENTS.md` for a project.
+`gptel-agent-harness-commands-initialize` creates or updates `AGENTS.md` for a project.
 
 It launches a dedicated gptel buffer with agent tools enabled and uses the
 initialize prompt from `prompts/initialize.txt` to guide the LLM in analyzing
 the repository and generating AGENTS.md.
 
 ```
-M-x gptel-agent-harness-initialize
+M-x gptel-agent-harness-commands-initialize
 ```
 
 When called interactively, it detects the current project root and prompts for
@@ -584,6 +589,25 @@ If a region is active when calling, the selected text is sent as initial context
     (gptel-agent-update)
     (add-to-list 'gptel-agent-harness-context-windows
                  '("openai/gpt-oss-120b" . 128000))))
+```
+
+---
+
+# File Structure
+
+```
+site-lisp/
+├── gptel-agent-harness.el          # Core: FSM supervision, context management, compaction, mode-line
+├── gptel-agent-harness-session.el  # Session: auto-save, title generation, preview, restore
+├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools
+├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
+├── gptel-agent-harness-commands.el # Commands (project initialization)
+├── gptel-agent-harness-test.el     # ERT test suite
+├── prompts/
+│   ├── compact.txt                 # Context compaction prompt
+│   ├── title.txt                   # Session title generation prompt
+│   └── initialize.txt              # Project initialization prompt
+└── agents/                         # Agent definition files
 ```
 
 ---
