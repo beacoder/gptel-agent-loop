@@ -36,6 +36,7 @@
 (require 'gptel-agent)
 (require 'gptel-agent-harness-tools)
 (require 'gptel-agent-harness-agent)
+(require 'gptel-agent-harness-session)
 (require 'gptel-agent-harness-commands)
 (require 'cl-lib)
 
@@ -92,7 +93,7 @@ more specific patterns before general ones."
   (expand-file-name
    "prompts/compact.txt"
    (file-name-directory (or (locate-library "gptel-agent-harness")
-                            (error "gptel‑agent‑harness not found"))))
+                            (error "Gptel-agent-harness not found"))))
   "File path for the context compaction prompt.")
 
 (defun gptel-agent-harness--read-compact-prompt ()
@@ -102,268 +103,6 @@ more specific patterns before general ones."
         (insert-file-contents gptel-agent-harness-compact-prompt-file)
         (buffer-string))
     (error "Compact prompt file not found: %s" gptel-agent-harness-compact-prompt-file)))
-
-;;;; Session Management
-(defcustom gptel-agent-harness-session-dir
-  (expand-file-name "gptel-sessions/" user-emacs-directory)
-  "Directory where gptel agent sessions are auto-saved."
-  :type 'directory
-  :group 'gptel-agent-harness)
-
-(defcustom gptel-agent-harness-auto-save-session t
-  "When non-nil, auto-save gptel agent buffers after each LLM response."
-  :type 'boolean
-  :group 'gptel-agent-harness)
-
-(defvar-local gptel-agent-harness--project-dir nil
-  "Project directory associated with this gptel agent buffer.
-Used for session restore to set `default-directory'.")
-
-;; Declare variables safe-local-variable so session restore can set them.
-(dolist (entry '((gptel-agent-harness--project-dir . stringp)
-                 (gptel-model                      . stringp)
-                 (gptel--backend-name              . stringp)
-                 (gptel-system-prompt              . stringp)
-                 (gptel-temperature                . numberp)
-                 (gptel-max-tokens                 . integerp)
-                 (gptel--num-messages-to-send      . integerp)))
-  (put (car entry) 'safe-local-variable (cdr entry)))
-
-(defvar-local gptel-agent-harness--session-file-cache nil
-  "Cached session file path for this buffer.
-Set once on first auto-save, reused for subsequent saves.")
-
-(defun gptel-agent-harness--session-file (&optional buffer)
-  "Return the session file path for BUFFER (default: current buffer).
-Returns the cached path if available, otherwise generates a new one.
-Returns nil if the buffer is not a gptel agent buffer."
-  (let ((buf (or buffer (current-buffer))))
-    (when (buffer-live-p buf)
-      (with-current-buffer buf
-        (when gptel-mode
-          (or gptel-agent-harness--session-file-cache
-              (let* ((proj-dir (or gptel-agent-harness--project-dir
-                                   default-directory))
-                     (proj-name (file-name-nondirectory
-                                 (directory-file-name proj-dir)))
-                     (timestamp (format-time-string "%y%m%d%H%M%S"))
-                     (file-name (format "%s_%s.md" proj-name timestamp)))
-                (setq gptel-agent-harness--session-file-cache
-                      (expand-file-name file-name
-                                        gptel-agent-harness-session-dir)))))))))
-
-(defun gptel-agent-harness--write-local-vars (vars)
-  "Insert a ;; Local Variables: block for VARS at point.
-VARS is an alist of (VAR-NAME-STRING . VALUE).
-Entries with nil values are skipped."
-  (insert "\n;; Local Variables:\n")
-  (pcase-dolist (`(,name . ,val) vars)
-    (when val
-      (insert (format ";; %s: %S\n" name val))))
-  (insert ";; End:\n"))
-
-(defun gptel-agent-harness--auto-save-session (&rest _)
-  "Auto-save the current gptel agent buffer to session dir.
-Intended as a hook function for `gptel-post-response-functions'."
-  (when (and gptel-mode
-             gptel-agent-harness-auto-save-session)
-    (unless (file-exists-p gptel-agent-harness-session-dir)
-      (make-directory gptel-agent-harness-session-dir t))
-    (when-let* ((file (gptel-agent-harness--session-file)))
-      (with-temp-message "gptel-agent-harness: auto-saving session..."
-        (let* ((source-buf (current-buffer))
-               (proj-dir (or gptel-agent-harness--project-dir
-                             default-directory))
-               (backend-name (or (and (boundp 'gptel--backend-name) gptel--backend-name)
-                                 (when (and (boundp 'gptel-backend) gptel-backend)
-                                   (gptel-backend-name gptel-backend))))
-               (vars `(("gptel-agent-harness--project-dir" . ,proj-dir)
-                       ("gptel--bounds"                    . ,(gptel--get-buffer-bounds))
-                       ("gptel-model"                      . ,gptel-model)
-                       ("gptel--backend-name"              . ,backend-name)
-                       ("gptel-system-prompt"              . ,gptel-system-prompt)
-                       ("gptel--tool-names"                . ,(mapcar #'gptel-tool-name gptel-tools))
-                       ("gptel-temperature"                . ,gptel-temperature)
-                       ("gptel-max-tokens"                 . ,gptel-max-tokens)
-                       ("gptel--num-messages-to-send"      . ,(and (natnump gptel--num-messages-to-send)
-                                                                    gptel--num-messages-to-send)))))
-          (with-temp-buffer
-            (insert-buffer-substring source-buf)
-            (goto-char (point-max))
-            (let ((print-escape-newlines t))
-              (gptel-agent-harness--write-local-vars vars))
-            (write-region (point-min) (point-max) file nil 'silent)))))))
-
-(defcustom gptel-agent-harness-preview-lines 40
-  "Number of lines to show in session preview buffer.
-Set to 0 or nil to show the entire file."
-  :type '(choice integer (const nil))
-  :group 'gptel-agent-harness)
-
-(defun gptel-agent-harness--preview-session (file)
-  "Display a preview of session FILE in a side window.
-Shows metadata and the first `gptel-agent-harness-preview-lines' lines.
-Returns the preview buffer."
-  (let ((buf (get-buffer-create "*gptel-session-preview*")))
-    (with-current-buffer buf
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert-file-contents file)
-        ;; Parse local variables for metadata display
-        (goto-char (point-min))
-        (let (metadata)
-          (when (search-forward "\n;; Local Variables:" nil t)
-            (let ((start (match-beginning 0)))
-              (forward-line 1)
-              (while (looking-at ";; \\([^:]+\\): \\(.*\\)")
-                (let ((name (string-trim (match-string 1)))
-                      (val (match-string 2)))
-                  (push (cons name val) metadata))
-                (forward-line 1))
-              ;; Remove local vars block from preview
-              (delete-region start (point-max))))
-          ;; Truncate if needed
-          (when (and gptel-agent-harness-preview-lines
-                     (> gptel-agent-harness-preview-lines 0))
-            (goto-char (point-min))
-            (when (> (count-lines (point-min) (point-max))
-                     gptel-agent-harness-preview-lines)
-              (forward-line gptel-agent-harness-preview-lines)
-              (delete-region (point) (point-max))
-              (insert "\n\n[... truncated ...]\n")))
-          ;; Insert metadata header at top
-          (goto-char (point-min))
-          (let ((header (concat
-                         (propertize "── Session Preview ──" 'face 'bold)
-                         "\n"
-                         (propertize (format "File: %s" (abbreviate-file-name file))
-                                     'face 'font-lock-comment-face)
-                         "\n"
-                         (when-let* ((model (cdr (assoc "gptel-model" metadata))))
-                           (format "Model: %s\n" model))
-                         (when-let* ((proj (cdr (assoc "gptel-agent-harness--project-dir" metadata))))
-                           (format "Project: %s\n" proj))
-                         (when-let* ((backend (cdr (assoc "gptel--backend-name" metadata))))
-                           (format "Backend: %s\n" backend))
-                         (propertize "────────────────────" 'face 'bold)
-                         "\n\n")))
-            (insert header))))
-      (goto-char (point-min))
-      (unless (derived-mode-p 'markdown-mode)
-        (when (fboundp 'markdown-mode) (markdown-mode)))
-      (setq buffer-read-only t)
-      (set-buffer-modified-p nil))
-    (display-buffer buf
-                    '((display-buffer-in-side-window
-                       display-buffer-pop-up-window)
-                      (side . right)
-                      (window-width . 0.5)))
-    buf))
-
-(defun gptel-agent-harness--dismiss-preview ()
-  "Kill the session preview buffer and its window if present."
-  (when-let* ((buf (get-buffer "*gptel-session-preview*")))
-    (when-let* ((win (get-buffer-window buf t)))
-      (unless (eq win (frame-root-window (window-frame win)))
-        (delete-window win)))
-    (kill-buffer buf)))
-
-(defvar gptel-agent-harness--preview-candidate nil
-  "Current candidate being previewed during session selection.")
-
-(defun gptel-agent-harness--preview-candidate-at-point ()
-  "Preview the currently selected session file candidate.
-Intended for use in `post-command-hook' inside the minibuffer."
-  (condition-case nil
-      (when-let* ((cand (or (and (bound-and-true-p vertico--index)
-                                 (bound-and-true-p vertico--candidates)
-                                 (listp vertico--candidates)
-                                 (>= vertico--index 0)
-                                 (< vertico--index (length vertico--candidates))
-                                 (nth vertico--index vertico--candidates))
-                            (and (bound-and-true-p ivy--current)
-                                 ivy--current)
-                            ;; Default completion: grab minibuffer content
-                            (let ((content (minibuffer-contents)))
-                              (when (> (length content) 0)
-                                content)))))
-        ;; Expand relative to minibuffer's default-directory
-        (let ((full-path (expand-file-name cand)))
-          (when (and (file-regular-p full-path)
-                     (not (equal full-path gptel-agent-harness--preview-candidate)))
-            (setq gptel-agent-harness--preview-candidate full-path)
-            (gptel-agent-harness--preview-session full-path))))
-    (error nil)))
-
-(defun gptel-agent-harness--setup-preview-hook ()
-  "Set up live preview in the minibuffer for session selection."
-  (setq gptel-agent-harness--preview-candidate nil)
-  (add-hook 'post-command-hook
-            #'gptel-agent-harness--preview-candidate-at-point nil t))
-
-(defun gptel-agent-harness--read-session-file ()
-  "Read a session file with live preview in a side window.
-Returns the selected file path."
-  (let ((gptel-agent-harness--preview-candidate nil))
-    (unwind-protect
-        (progn
-          (minibuffer-with-setup-hook
-              #'gptel-agent-harness--setup-preview-hook
-            (read-file-name "Session file: "
-                           gptel-agent-harness-session-dir
-                           nil t)))
-      (gptel-agent-harness--dismiss-preview))))
-
-(defun gptel-agent-harness-restore-session (session-file)
-  "Restore a gptel agent session from SESSION-FILE.
-The file should have been created by
-`gptel-agent-harness--auto-save-session'.
-During file selection, a live preview is shown in a side window
-as you navigate candidates.
-This opens the file, enables `gptel-mode', and restores all state."
-  (interactive
-   (list (gptel-agent-harness--read-session-file)))
-  (let ((buf (generate-new-buffer
-              (file-name-nondirectory session-file))))
-    (switch-to-buffer buf)
-    (insert-file-contents session-file)
-    (setq major-mode 'markdown-mode)
-    (when (fboundp 'markdown-mode) (markdown-mode))
-    ;; Manually parse and apply local variables, then strip the block
-    (save-excursion
-      (goto-char (point-min))
-      (when (search-forward "\n;; Local Variables:" nil t)
-        (let ((start (match-beginning 0)))
-          (forward-line 1)
-          (while (looking-at ";; \\([^:]+\\): \\(.*\\)")
-            (let* ((var-name (string-trim (match-string 1)))
-                   (val-str (match-string 2))
-                   (var-sym (intern var-name)))
-              (when (get var-sym 'safe-local-variable)
-                (set (make-local-variable var-sym)
-                     (car (read-from-string val-str)))))
-            (forward-line 1))
-          (delete-region start (point-max)))))
-    (gptel-mode 1)
-    (when gptel-agent-harness--project-dir
-      (setq default-directory gptel-agent-harness--project-dir))
-    (set-buffer-modified-p nil)
-    (message "gptel-agent-harness: session restored from %s" session-file)))
-
-(defun gptel-agent-harness-restore-latest-session ()
-  "Restore the most recently modified gptel agent session.
-Looks in `gptel-agent-harness-session-dir' for the newest .md file."
-  (interactive)
-  (if (file-directory-p gptel-agent-harness-session-dir)
-      (let* ((files (directory-files gptel-agent-harness-session-dir
-                                     t "\\.md\\'"))
-             (latest (car (sort files #'file-newer-than-file-p))))
-        (if latest
-            (gptel-agent-harness-restore-session latest)
-          (message "No gptel agent sessions found in %s"
-                   gptel-agent-harness-session-dir)))
-    (message "Session directory %s does not exist"
-             gptel-agent-harness-session-dir)))
 
 ;;;; Internal State
 (defvar-local gptel-agent-harness--nudge-count 0
@@ -932,24 +671,17 @@ Restores `which-func-mode' to its global default."
                     mode-line-misc-info))
   (kill-local-variable 'which-func-mode))
 
-;;;; Session Auto-Save Setup
+;;;; Token Calibration Setup
 
-(defun gptel-agent-harness--setup-session ()
-  "Set up session auto-save and token calibration for the current gptel buffer.
-Adds hooks to `gptel-post-response-functions' buffer-locally."
-  (when gptel-agent-harness-auto-save-session
-    (add-hook 'gptel-post-response-functions
-              #'gptel-agent-harness--auto-save-session
-              nil t))
+(defun gptel-agent-harness--setup-calibration ()
+  "Set up token calibration for the current gptel buffer.
+Adds hook to `gptel-post-response-functions' buffer-locally."
   (add-hook 'gptel-post-response-functions
             #'gptel-agent-harness--update-token-calibration
             nil t))
 
-(defun gptel-agent-harness--teardown-session ()
-  "Remove session auto-save and token calibration from the current gptel buffer."
-  (remove-hook 'gptel-post-response-functions
-               #'gptel-agent-harness--auto-save-session
-               t)
+(defun gptel-agent-harness--teardown-calibration ()
+  "Remove token calibration from the current gptel buffer."
   (remove-hook 'gptel-post-response-functions
                #'gptel-agent-harness--update-token-calibration
                t))
@@ -973,12 +705,14 @@ Provides completion and context supervision."
         (when (boundp 'gptel-mode-map)
           (define-key gptel-mode-map (kbd "C-c C-k") #'gptel-abort))
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
+        (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
         (add-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
         ;; Set up for already-open gptel buffers
         (dolist (buf (buffer-list))
           (with-current-buffer buf
             (when gptel-mode
               (gptel-agent-harness--setup-mode-line)
+              (gptel-agent-harness--setup-calibration)
               (gptel-agent-harness--setup-session))))
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness enabled")))
@@ -990,12 +724,14 @@ Provides completion and context supervision."
     (when (boundp 'gptel-mode-map)
       (define-key gptel-mode-map (kbd "C-c C-k") nil))
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-mode-line)
+    (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-calibration)
     (remove-hook 'gptel-mode-hook #'gptel-agent-harness--setup-session)
     ;; Clean up from all gptel buffers
     (dolist (buf (buffer-list))
       (with-current-buffer buf
         (when gptel-mode
           (gptel-agent-harness--teardown-mode-line)
+          (gptel-agent-harness--teardown-calibration)
           (gptel-agent-harness--teardown-session)
           (setq gptel-agent-harness--context-ratio nil)
           (setq gptel-agent-harness--token-calibration 1.0)
