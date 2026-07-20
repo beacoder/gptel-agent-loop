@@ -109,7 +109,7 @@ If region is active, the selected text is sent as initial context."
                   (flatten-list
                    (mapcar #'gptel-get-tool
                            '("TodoWrite" "Glob" "Grep" "Read" "Insert"
-                             "Edit" "Write" "Mkdir" "Bash" "Skill"))))
+                             "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
       (gptel--update-status " Initializing..." 'warning)
       (unless region-content
         (goto-char (point-max))
