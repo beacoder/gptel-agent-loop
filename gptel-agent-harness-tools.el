@@ -4,10 +4,6 @@
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-harness
-;; Package-Version: 0.3
-;; Package-Requires: ((emacs "29.1") (gptel-agent "0.0.1"))
-;; Package-Keywords: programming, convenience, ai, agent
-;; Package-Description: Improved glob and grep tools for gptel-agent-harness.
 ;;
 ;; This file is not part of GNU Emacs.
 
@@ -244,4 +240,8 @@ this tool cannot be used")))))
     (setq gptel-agent-harness-tools--orig-grep nil)))
 
 (provide 'gptel-agent-harness-tools)
+
+;; Local Variables:
+;; package-lint-main-file: "gptel-agent-harness.el"
+;; End:
 ;;; gptel-agent-harness-tools.el ends here
