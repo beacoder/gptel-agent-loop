@@ -938,16 +938,39 @@ top-level-p) see them."
   (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
     (should-error (gptel-agent-harness--read-compact-prompt))))
 
+(ert-deftest gptel-agent-harness-test-sanitize-title ()
+  "Test `--sanitize-title' produces safe filenames."
+  ;; Normal title
+  (should (equal (gptel-agent-harness--sanitize-title "Debugging 500 errors")
+                 "Debugging-500-errors"))
+  ;; Quoted title from LLM
+  (should (equal (gptel-agent-harness--sanitize-title "\"Fix auth bug\"")
+                 "Fix-auth-bug"))
+  ;; Unsafe filesystem chars
+  (should (equal (gptel-agent-harness--sanitize-title "path/to\\file:test")
+                 "path-to-file-test"))
+  ;; Truncation at 50 chars
+  (let ((long-title (make-string 60 ?x)))
+    (should (= (length (gptel-agent-harness--sanitize-title long-title)) 50)))
+  ;; Trailing hyphens removed
+  (should (equal (gptel-agent-harness--sanitize-title "trailing---")
+                 "trailing"))
+  ;; Whitespace trimmed
+  (should (equal (gptel-agent-harness--sanitize-title "  spaced out  ")
+                 "spaced-out")))
+
 (ert-deftest gptel-agent-harness-test-setup-teardown-session ()
-  "Test `--setup-session' and `--teardown-session' hook management."
+  "Test session and calibration setup/teardown hook management."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (gptel-agent-harness--setup-session)
+      (gptel-agent-harness--setup-calibration)
       (should (memq #'gptel-agent-harness--auto-save-session
                     gptel-post-response-functions))
       (should (memq #'gptel-agent-harness--update-token-calibration
                     gptel-post-response-functions))
       (gptel-agent-harness--teardown-session)
+      (gptel-agent-harness--teardown-calibration)
       (should-not (memq #'gptel-agent-harness--auto-save-session
                         gptel-post-response-functions))
       (should-not (memq #'gptel-agent-harness--update-token-calibration
