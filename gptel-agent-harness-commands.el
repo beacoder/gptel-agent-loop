@@ -4,11 +4,6 @@
 ;;
 ;; Author: Huming Chen <chenhuming@gmail.com>
 ;; URL: https://github.com/beacoder/gptel-agent-harness
-;; Package-Version: 0.3
-;; Package-Author: Huming Chen
-;; Package-Keywords: programming, convenience, ai, agent
-;; Package-Description: Agent execution harness for gptel-agent.
-;; Package-Requires: ((emacs "28.1"))
 ;;
 ;; This file is not part of GNU Emacs.
 
@@ -34,7 +29,6 @@
 (require 'gptel)
 (require 'gptel-agent)
 (require 'project)
-(require 'cl-lib)
 
 (defconst gptel-agent-harness-commands--initialize-prompt-file
   (expand-file-name
@@ -91,44 +85,38 @@ If region is active, the selected text is sent as initial context."
      (list dir (and (not (string-blank-p extra-str)) extra-str))))
   (unless (file-directory-p project-dir)
     (user-error "Invalid project directory: %s" project-dir))
-  (gptel--update-status " Initializing..." 'warning)
   (let* ((raw-prompt (gptel-agent-harness-commands--read-initialize-prompt))
          (prompt-content (gptel-agent-harness-commands--substitute-placeholders
                           raw-prompt project-dir extra))
-         (preset-name (cl-gensym "gptel-agent-harness-init-"))
          (proj-name (file-name-nondirectory
                      (directory-file-name project-dir)))
          (region-content (and (use-region-p)
                               (buffer-substring (region-beginning)
-                                                (region-end)))))
-    (gptel-make-preset preset-name
-      :description "A preset optimized for project initialization (AGENTS.md)"
-      :backend gptel-backend
-      :model gptel-model
-      :stream t
-      :system prompt-content
-      :tools '("TodoWrite" "Glob" "Grep" "Read" "Insert" "Edit" "Write"
-               "Mkdir" "Bash" "Skill")
-      :temperature 0)
-    (let* ((gptel-buf
-            (gptel (generate-new-buffer-name
-                    (format "*gptel-agent-init:%s*" proj-name))
-                   nil region-content 'interactive)))
-      (with-current-buffer gptel-buf
-        (setq default-directory project-dir)
-        (gptel-agent-update)
-        (gptel--apply-preset
-         preset-name
-         (lambda (sym val) (set (make-local-variable sym) val)))
-        (gptel--update-status " Initializing..." 'warning)
-        (unless region-content
-          (goto-char (point-max))
-          (insert (format
-                   "Analyze the repository at %s and create/update AGENTS.md."
-                   project-dir))
-          (insert "\n"))
-        (gptel-send))
-      gptel-buf)))
+                                                (region-end))))
+         ;; Set up gptel variables for the new buffer
+         (gptel-system-prompt prompt-content)
+         (gptel-temperature 0)
+         (gptel-use-tools t)
+         (gptel-buf
+          (gptel (generate-new-buffer-name
+                  (format "*gptel-agent-init:%s*" proj-name))
+                 nil region-content 'interactive)))
+    (with-current-buffer gptel-buf
+      (setq default-directory project-dir)
+      (gptel-agent-update)
+      (gptel--update-status " Initializing..." 'warning)
+      (unless region-content
+        (goto-char (point-max))
+        (insert (format
+                 "Analyze the repository at %s and create/update AGENTS.md."
+                 project-dir))
+        (insert "\n"))
+      (gptel-send))
+    gptel-buf))
 
 (provide 'gptel-agent-harness-commands)
+
+;; Local Variables:
+;; package-lint-main-file: "gptel-agent-harness.el"
+;; End:
 ;;; gptel-agent-harness-commands.el ends here
