@@ -1,4 +1,4 @@
-## Task Completion Rules (CRITICAL)
+# Task Completion Rules (CRITICAL)
 
 You MUST NOT stop execution unless the task is fully completed and verified.
 
