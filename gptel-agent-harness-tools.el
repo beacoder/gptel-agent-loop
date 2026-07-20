@@ -215,10 +215,158 @@ this tool cannot be used")))))
         (gptel-agent--truncate-buffer "grep")
         (buffer-string)))))
 
+;;;; Question Tool — interactive user prompting
+
+(defconst gptel-agent-harness-tools--custom-option
+  "[Type your own answer]"
+  "Label for the free-text option appended to choices.")
+
+(defvar gptel-agent-harness-tools--question-tool nil
+  "The registered Question tool object.")
+
+(defun gptel-agent-harness-tools--ask-one (question options multiple custom)
+  "Ask the user QUESTION with OPTIONS.
+
+OPTIONS is a vector of label strings (or nil for free-text only).
+If MULTIPLE is non-nil, allow selecting more than one option.
+If CUSTOM is non-nil, append a free-text option to the choices.
+
+Returns a list of selected label strings."
+  (let* ((choices (when options
+                    (append options nil)))  ; vector -> list
+         (choices (if (and choices custom)
+                      (append choices
+                              (list gptel-agent-harness-tools--custom-option))
+                    choices))
+         (prompt (concat question " "))
+         result)
+    (cond
+     ;; No options at all — just read a string
+     ((null choices)
+      (setq result (list (read-string prompt))))
+     ;; Multiple selection
+     (multiple
+      (let ((selected (completing-read-multiple prompt choices nil t)))
+        (setq result
+              (mapcar
+               (lambda (sel)
+                 (if (string= sel gptel-agent-harness-tools--custom-option)
+                     (read-string (format "%s (your answer): " question))
+                   sel))
+               selected))))
+     ;; Single selection
+     (t
+      (let ((selected (completing-read prompt choices nil t)))
+        (setq result
+              (list
+               (if (string= selected gptel-agent-harness-tools--custom-option)
+                   (read-string (format "%s (your answer): " question))
+                 selected))))))
+    result))
+
+(defun gptel-agent-harness-tools--ask-questions (questions)
+  "Process QUESTIONS and return formatted answers string.
+
+QUESTIONS is a JSON-decoded vector of question objects.  Each object
+is a plist with keys:
+  :question  - The question text (string, required)
+  :options   - Vector of option labels (optional)
+  :multiple  - Whether multi-select is allowed (boolean, optional)
+  :custom    - Whether free-text is allowed (boolean, default t)"
+  (let ((results nil)
+        (questions-list (if (vectorp questions)
+                            (append questions nil)
+                          questions)))
+    (dolist (q questions-list)
+      (let* ((text (plist-get q :question))
+             (options (plist-get q :options))
+             (multiple (eq (plist-get q :multiple) t))
+             (custom (let ((c (plist-get q :custom)))
+                       (if (eq c :json-false) nil t)))  ; default to t
+             (answers (gptel-agent-harness-tools--ask-one
+                       text options multiple custom)))
+        (push (cons text answers) results)))
+    ;; Format output
+    (mapconcat
+     (lambda (pair)
+       (format "\"%s\" = \"%s\""
+               (car pair)
+               (if (cdr pair)
+                   (mapconcat #'identity (cdr pair) ", ")
+                 "Unanswered")))
+     (nreverse results)
+     "\n")))
+
+(defun gptel-agent-harness-tools--register-question ()
+  "Register the Question tool with gptel."
+  (unless gptel-agent-harness-tools--question-tool
+    (setq gptel-agent-harness-tools--question-tool
+          (gptel-make-tool
+           :name "Question"
+           :function #'gptel-agent-harness-tools--ask-questions
+           :description
+           "Ask the user one or more questions during execution.
+
+Use this tool when you need to:
+1. Gather user preferences or requirements
+2. Clarify ambiguous instructions
+3. Get decisions on implementation choices as you work
+4. Offer choices to the user about what direction to take
+
+Each question can have predefined options for the user to select from.
+By default, a \"Type your own answer\" option is added; set `custom` to
+false to disable it.  Set `multiple` to true to allow selecting more
+than one option.
+
+If no options are provided, the user will be prompted for free-text input.
+
+If you recommend a specific option, make that the first option in the
+list and add \"(Recommended)\" at the end of the label.
+
+Returns the user's answers as quoted key-value pairs, one per line."
+           :args '((:name "questions"
+                    :type array
+                    :description "Array of question objects to ask the user."
+                    :items
+                    (:type object
+                     :properties
+                     (:question
+                      (:type string
+                       :description "The question to ask the user.")
+                      :options
+                      (:type array
+                       :description "Predefined options for the user to choose from. If omitted, user provides free-text."
+                       :items (:type string))
+                      :multiple
+                      (:type boolean
+                       :description "If true, the user can select multiple options. Default: false.")
+                      :custom
+                      (:type boolean
+                       :description "If true (default), a free-text option is appended to the choices. Set to false to restrict to only the provided options."))
+                     :required ["question"])))
+           :category "gptel-agent"
+           :confirm nil
+           :include t))))
+
+(defun gptel-agent-harness-tools--unregister-question ()
+  "Unregister the Question tool from gptel."
+  (when gptel-agent-harness-tools--question-tool
+    (let* ((tool gptel-agent-harness-tools--question-tool)
+           (category (or (gptel-tool-category tool) "misc"))
+           (name (gptel-tool-name tool))
+           (cat-entry (assoc category gptel--known-tools #'equal)))
+      (when cat-entry
+        (setf (alist-get name (cdr cat-entry) nil 'remove #'equal) nil)
+        (unless (cdr cat-entry)
+          (setq gptel--known-tools
+                (assoc-delete-all category gptel--known-tools #'equal)))))
+    (setq gptel-agent-harness-tools--question-tool nil)))
+
 ;;;; Activation / Deactivation (called by gptel-agent-harness-mode)
 
 (defun gptel-agent-harness-tools-enable ()
-  "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions."
+  "Override `gptel-agent--glob' and `gptel-agent--grep' with improved versions.
+Also register additional tools (Question)."
   (when (fboundp 'gptel-agent--glob)
     (unless gptel-agent-harness-tools--orig-glob
       (setq gptel-agent-harness-tools--orig-glob
@@ -228,16 +376,19 @@ this tool cannot be used")))))
     (unless gptel-agent-harness-tools--orig-grep
       (setq gptel-agent-harness-tools--orig-grep
             (symbol-function 'gptel-agent--grep)))
-    (advice-add 'gptel-agent--grep :override #'gptel-agent-harness-tools--grep)))
+    (advice-add 'gptel-agent--grep :override #'gptel-agent-harness-tools--grep))
+  (gptel-agent-harness-tools--register-question))
 
 (defun gptel-agent-harness-tools-disable ()
-  "Restore original `gptel-agent--glob' and `gptel-agent--grep'."
+  "Restore original `gptel-agent--glob' and `gptel-agent--grep'.
+Also unregister additional tools (Question)."
   (when gptel-agent-harness-tools--orig-glob
     (advice-remove 'gptel-agent--glob #'gptel-agent-harness-tools--glob)
     (setq gptel-agent-harness-tools--orig-glob nil))
   (when gptel-agent-harness-tools--orig-grep
     (advice-remove 'gptel-agent--grep #'gptel-agent-harness-tools--grep)
-    (setq gptel-agent-harness-tools--orig-grep nil)))
+    (setq gptel-agent-harness-tools--orig-grep nil))
+  (gptel-agent-harness-tools--unregister-question))
 
 (provide 'gptel-agent-harness-tools)
 
