@@ -990,5 +990,100 @@ top-level-p) see them."
       (should-not (memq 'gptel-agent-harness--mode-line-construct
                         mode-line-misc-info)))))
 
+;;;; Question Tool Tests
+
+(ert-deftest gptel-agent-harness-test-question-ask-one-single-select ()
+  "Test single-select question via completing-read."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt choices &rest _) (car choices))))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "Pick one:" ["alpha" "beta" "gamma"] nil t)))
+      (should (equal result '("alpha"))))))
+
+(ert-deftest gptel-agent-harness-test-question-ask-one-multi-select ()
+  "Test multi-select question via completing-read-multiple."
+  (cl-letf (((symbol-function 'completing-read-multiple)
+             (lambda (_prompt choices &rest _)
+               (list (nth 0 choices) (nth 1 choices)))))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "Pick many:" ["alpha" "beta" "gamma"] t t)))
+      (should (equal result '("alpha" "beta"))))))
+
+(ert-deftest gptel-agent-harness-test-question-ask-one-free-text ()
+  "Test free-text fallback when no options provided."
+  (cl-letf (((symbol-function 'read-string)
+             (lambda (_prompt &rest _) "my custom answer")))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "What do you think?" nil nil nil)))
+      (should (equal result '("my custom answer"))))))
+
+(ert-deftest gptel-agent-harness-test-question-ask-one-custom-option ()
+  "Test selecting the custom free-text option triggers read-string."
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt choices &rest _)
+               ;; Simulate user selecting the custom option (last item)
+               (car (last choices))))
+            ((symbol-function 'read-string)
+             (lambda (_prompt &rest _) "typed answer")))
+    (let ((result (gptel-agent-harness-tools--ask-one
+                   "Choose:" ["opt1" "opt2"] nil t)))
+      (should (equal result '("typed answer"))))))
+
+(ert-deftest gptel-agent-harness-test-question-ask-one-no-custom ()
+  "Test that custom=nil does not append the free-text option."
+  (let ((offered-choices nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (setq offered-choices choices)
+                 (car choices))))
+      (gptel-agent-harness-tools--ask-one
+       "Choose:" ["opt1" "opt2"] nil nil)
+      (should (equal offered-choices '("opt1" "opt2")))
+      (should-not (member gptel-agent-harness-tools--custom-option
+                          offered-choices)))))
+
+(ert-deftest gptel-agent-harness-test-question-ask-questions-multiple ()
+  "Test processing multiple questions returns formatted output."
+  (let ((call-count 0))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (cl-incf call-count)
+                 (car choices)))
+              ((symbol-function 'read-string)
+               (lambda (_prompt &rest _) "free text")))
+      (let* ((questions (vector
+                         (list :question "Q1?" :options ["a" "b"])
+                         (list :question "Q2?")))  ; no options → free text
+             (result (gptel-agent-harness-tools--ask-questions questions)))
+        (should (string-match-p "\"Q1\\?\" = \"a\"" result))
+        (should (string-match-p "\"Q2\\?\" = \"free text\"" result))))))
+
+(ert-deftest gptel-agent-harness-test-question-custom-json-false ()
+  "Test that :custom :json-false disables the custom option."
+  (let ((offered-choices nil))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt choices &rest _)
+                 (setq offered-choices choices)
+                 (car choices))))
+      (let* ((questions (vector
+                         (list :question "Pick:" :options ["x" "y"]
+                               :custom :json-false)))
+             (result (gptel-agent-harness-tools--ask-questions questions)))
+        (should (string-match-p "\"Pick:\" = \"x\"" result))
+        (should-not (member gptel-agent-harness-tools--custom-option
+                            offered-choices))))))
+
+(ert-deftest gptel-agent-harness-test-question-register-unregister ()
+  "Test Question tool registration and unregistration."
+  (let ((gptel-agent-harness-tools--question-tool nil)
+        (gptel--known-tools nil))
+    ;; Register
+    (gptel-agent-harness-tools--register-question)
+    (should gptel-agent-harness-tools--question-tool)
+    (should (assoc "gptel-agent" gptel--known-tools #'equal))
+    ;; Unregister
+    (gptel-agent-harness-tools--unregister-question)
+    (should-not gptel-agent-harness-tools--question-tool)))
+
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
