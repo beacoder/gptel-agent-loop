@@ -37,10 +37,14 @@
 ;;; Code:
 
 (require 'gptel)
+(require 'gptel-agent)
 (require 'cl-lib)
 
 ;; Defined in gptel-agent-harness.el, loaded after this file.
 (defvar gptel-agent-harness-verbose)
+
+;; Defined in gptel-request.el (loaded transitively via gptel).
+(defvar gptel--known-backends)
 
 ;;;; User Options
 
@@ -69,7 +73,7 @@ Used for session restore to set `default-directory'.")
 
 ;; Declare variables safe-local-variable so session restore can set them.
 (dolist (entry '((gptel-agent-harness--project-dir . stringp)
-                 (gptel-model                      . stringp)
+                 (gptel-model                      . always)
                  (gptel--backend-name              . stringp)
                  (gptel-system-prompt              . stringp)
                  (gptel-temperature                . numberp)
@@ -226,6 +230,7 @@ Intended as a hook function for `gptel-post-response-functions'."
                        ("gptel--bounds"                    . ,(gptel--get-buffer-bounds))
                        ("gptel-model"                      . ,gptel-model)
                        ("gptel--backend-name"              . ,backend-name)
+                       ("gptel--preset"                    . ,gptel--preset)
                        ("gptel-system-prompt"              . ,gptel-system-prompt)
                        ("gptel--tool-names"                . ,(mapcar #'gptel-tool-name gptel-tools))
                        ("gptel-temperature"                . ,gptel-temperature)
@@ -413,7 +418,21 @@ This opens the file, enables `gptel-mode', and restores all state."
                      (car (read-from-string val-str)))))
             (forward-line 1))
           (delete-region start (point-max)))))
+    (gptel-agent-update)
     (gptel-mode 1)
+    ;; gptel-mode's built-in restore only fires for file-visiting buffers.
+    ;; Since session buffers are not file-visiting, manually restore state.
+    (when gptel--bounds
+      (gptel--restore-props gptel--bounds))
+    (when gptel--preset
+      (when (gptel-get-preset gptel--preset)
+        (gptel--apply-preset
+         gptel--preset (lambda (sym val) (set (make-local-variable sym) val)))))
+    (when gptel--backend-name
+      (when-let* ((backend (alist-get
+                            gptel--backend-name gptel--known-backends
+                            nil nil #'equal)))
+        (setq-local gptel-backend backend)))
     (when gptel-agent-harness--project-dir
       (setq default-directory gptel-agent-harness--project-dir))
     ;; Restore title and session file cache for subsequent saves
