@@ -45,6 +45,13 @@
                             (error "Failed to find gptel-agent-harness"))))
   "File path for the code review prompt.")
 
+(defconst gptel-agent-harness-commands--summary-prompt-file
+  (expand-file-name
+   "prompts/summary.txt"
+   (file-name-directory (or (locate-library "gptel-agent-harness")
+                            (error "Failed to find gptel-agent-harness"))))
+  "File path for the conversation summary prompt.")
+
 (defun gptel-agent-harness-commands--read-initialize-prompt ()
   "Read and return the initialize prompt file contents."
   (if (file-exists-p gptel-agent-harness-commands--initialize-prompt-file)
@@ -62,6 +69,15 @@
         (buffer-string))
     (error "Review prompt file not found: %s"
            gptel-agent-harness-commands--review-prompt-file)))
+
+(defun gptel-agent-harness-commands--read-summary-prompt ()
+  "Read and return the summary prompt file contents."
+  (if (file-exists-p gptel-agent-harness-commands--summary-prompt-file)
+      (with-temp-buffer
+        (insert-file-contents gptel-agent-harness-commands--summary-prompt-file)
+        (buffer-string))
+    (error "Summary prompt file not found: %s"
+           gptel-agent-harness-commands--summary-prompt-file)))
 
 (defun gptel-agent-harness-commands--substitute-placeholders (template project-dir extra)
   "Substitute ${path} and $ARGUMENTS in TEMPLATE with PROJECT-DIR and EXTRA."
@@ -176,6 +192,41 @@ A dedicated *gptel-agent-review* buffer is created for the review."
                         "")))
       (gptel-send)
       gptel-buf)))
+
+;;;###autoload
+(defun gptel-agent-harness-commands-summary ()
+  "Summarize the current gptel buffer conversation.
+
+Uses the summary prompt from `gptel-agent-harness-commands--summary-prompt-file'
+as the system prompt, and sends the current buffer's conversation history as user
+input.  If the region is active, uses the region content instead of the full
+buffer.  The resulting summary is inserted at the end of the buffer."
+  (interactive)
+  (unless (bound-and-true-p gptel-mode)
+    (user-error "Not in a gptel buffer"))
+  (let* ((system-prompt (gptel-agent-harness-commands--read-summary-prompt))
+         (conversation (if (use-region-p)
+                           (buffer-substring-no-properties
+                            (region-beginning) (region-end))
+                         (buffer-substring-no-properties
+                          (point-min) (point-max))))
+         (buf (current-buffer)))
+    (deactivate-mark)
+    (goto-char (point-max))
+    (insert "Summarize current conversation.\n")
+    (gptel--update-status " Summarizing..." 'warning)
+    (gptel-request conversation
+      :system system-prompt
+      :callback (lambda (response info)
+                  (if (not response)
+                      (progn
+                        (message "Summary request failed: %s" (plist-get info :status))
+                        (gptel--update-status  " Failed" 'error))
+                    (with-current-buffer buf
+                      (goto-char (point-max))
+                      (unless (bolp) (insert "\n"))
+                      (insert "\n" response "\n")
+                      (gptel--update-status  " Ready" 'success)))))))
 
 (provide 'gptel-agent-harness-commands)
 
