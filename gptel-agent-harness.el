@@ -492,26 +492,21 @@ Return non-nil if compaction was initiated, nil otherwise."
           ;;    to update (preserving, removing, merging facts).  Without this
           ;;    wrapping, the LLM sees it as raw conversation text and
           ;;    re-summarizes from scratch, making the summary grow unboundedly.
-          ;;    Also clean up the noise markers (header, separator).
+          ;;    After step 2 deleted the current round, the buffer contains
+          ;;    only header + old summary (if a previous compaction happened).
+          ;;    So the old summary is everything after the header to point-max.
           (save-excursion
             (goto-char (point-min))
             (when (search-forward gptel-agent-harness-compact-header nil t)
-              (when-let* ((props (text-property-search-forward 'gptel 'response t))
-                          (resp-begin (prop-match-beginning props)))
-                (let ((old-summary (buffer-substring-no-properties
-                                    (point) resp-begin)))
-                  (when (and old-summary (not (string-blank-p old-summary)))
-                    (goto-char resp-begin)
-                    (when (search-forward
-                           gptel-agent-harness-compact-separator nil t)
-                      (let ((saved-round (buffer-substring resp-begin (point))))
-                        (delete-region (point-min) (point))
-                        (insert saved-round)
-                        (goto-char (point-min))
-                        (insert
-                         (format
-                          "<previous-summary>\n%s\n</previous-summary>\n\n"
-                          (string-trim old-summary))))))))))
+              (let ((old-summary (string-trim
+                                  (buffer-substring-no-properties
+                                   (point) (point-max)))))
+                (unless (string-blank-p old-summary)
+                  (delete-region (point) (point-max))
+                  (insert
+                   (format
+                    "<previous-summary>\n%s\n</previous-summary>\n\n"
+                    old-summary))))))
           ;; 4. Stop old FSM
           (gptel-abort buf)
           ;; Move point to end so gptel-agent-compact sees the full buffer
