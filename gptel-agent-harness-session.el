@@ -78,7 +78,8 @@ Used for session restore to set `default-directory'.")
                  (gptel-system-prompt              . stringp)
                  (gptel-temperature                . numberp)
                  (gptel-max-tokens                 . integerp)
-                 (gptel--num-messages-to-send      . integerp)))
+                 (gptel--num-messages-to-send      . integerp)
+                 (gptel--tool-names                . listp)))
   (put (car entry) 'safe-local-variable (cdr entry)))
 
 (defvar-local gptel-agent-harness--session-file-cache nil
@@ -433,6 +434,13 @@ This opens the file, enables `gptel-mode', and restores all state."
                             gptel--backend-name gptel--known-backends
                             nil nil #'equal)))
         (setq-local gptel-backend backend)))
+    ;; Restore tools from saved tool names when no preset handles it
+    (when (and (bound-and-true-p gptel--tool-names) (not gptel--preset))
+      (when-let* ((tools (cl-loop for tname in gptel--tool-names
+                                   for tool = (gptel-get-tool tname)
+                                   if tool collect tool)))
+        (setq-local gptel-tools tools)
+        (setq-local gptel-use-tools t)))
     (when gptel-agent-harness--project-dir
       (setq default-directory gptel-agent-harness--project-dir))
     ;; Restore title and session file cache for subsequent saves
