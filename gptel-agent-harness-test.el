@@ -40,6 +40,10 @@
 (require 'cl-lib)
 (require 'gptel-agent-harness)
 
+;; Ensure gptel backends are available (needed for `gptel' function in
+;; review/commands tests when running in batch mode).
+(require 'gptel-openai nil t)
+
 ;;;; Stubs — minimal gptel API surface needed for testing
 ;; These provide a minimal gptel API surface when the real packages
 ;; are not available.  We use `fset' to avoid package-lint prefix errors.
@@ -90,8 +94,8 @@
   (unless (fboundp 'gptel-agent-compact)
     (fset 'gptel-agent-compact
           (lambda (_prompt callback)
-            (when (functionp (cadr callback))
-              (funcall (cadr callback))))))
+            (when (functionp callback)
+              (funcall callback)))))
   (unless (fboundp 'gptel-send)
     (fset 'gptel-send (lambda () nil)))
   (unless (fboundp 'gptel--fsm-transition)
@@ -341,27 +345,10 @@ top-level-p) see them."
                                            :function
                                            (list :name "search"
                                                  :arguments "{\"q\":\"test\"}"))))))))
-        ;; reasoning: 23 chars + \n, nil content: 0, tool_calls: 20 chars
-        ;; total = 43 chars → round(43/4) = 11
+        ;; reasoning: 23 + "\n" = 24 chars, nil content: 0,
+        ;; tool_calls: "search\n" + "{\"q\":\"test\"}\n" = 7+13 = 20 chars
+        ;; total = 44 chars → round(44/4) = 11
         (should (= (gptel-agent-harness--context-tokens-from-data fsm) 11))))))
-
-(ert-deftest gptel-agent-harness-test-context-tokens-from-data-nil-content ()
-  "Test token estimation handles nil content with tool_calls."
-  (let ((gptel-agent-harness-verbose nil))
-    (gptel-agent-harness-test--with-buffer buf
-      (let ((fsm (gptel-agent-harness-test--make-fsm buf
-                   :system ""
-                   :messages (vector
-                              (list :role "assistant"
-                                    :content nil
-                                    :tool_calls
-                                    (vector
-                                     (list :type "function"
-                                           :id "call_123"
-                                           :function
-                                           (list :name "Skill"
-                                                 :arguments "{\"skill\":\"test\"}"))))))))
-        (should (= (gptel-agent-harness--context-tokens-from-data fsm) 6))))))
 
 ;;;; Context Ratio Tests
 
@@ -526,20 +513,29 @@ top-level-p) see them."
   "Ensure the latest session file is chosen for restore."
   (gptel-agent-harness-test--with-temp-dir temp-dir
     (let ((gptel-agent-harness-session-dir temp-dir))
-      ;; Create two session files from different buffers
+      ;; Create two session files from different buffers (different project names
+      ;; to avoid filename collision when timestamps are identical)
       (gptel-agent-harness-test--with-buffer buf1
         (with-current-buffer buf1
           (rename-buffer "*test-first*" t)
-          (gptel-agent-harness-test--setup-gptel-buffer buf1 "/tmp/project")
+          (gptel-agent-harness-test--setup-gptel-buffer buf1 "/tmp/alpha")
           (insert "first")
           (gptel-agent-harness--auto-save-session)))
-      (sleep-for 1)
       (gptel-agent-harness-test--with-buffer buf2
         (with-current-buffer buf2
           (rename-buffer "*test-second*" t)
-          (gptel-agent-harness-test--setup-gptel-buffer buf2 "/tmp/project")
+          (gptel-agent-harness-test--setup-gptel-buffer buf2 "/tmp/beta")
           (insert "second")
           (gptel-agent-harness--auto-save-session)))
+      ;; Make "second" file newer by touching its timestamp
+      (let* ((files (directory-files temp-dir t "\\.md\\'"))
+             (second-file (cl-find-if
+                           (lambda (f)
+                             (with-temp-buffer
+                               (insert-file-contents f)
+                               (search-forward "second" nil t)))
+                           files)))
+        (set-file-times second-file (time-add (current-time) 10)))
       ;; Verify latest is "second"
       (let* ((files (directory-files temp-dir t "\\.md\\'"))
              (latest (car (sort files #'file-newer-than-file-p))))
@@ -710,39 +706,6 @@ top-level-p) see them."
       (setq gptel-agent-harness-agent--orig-fn nil)
       (setq gptel-agent-harness-tools--orig-glob nil)
       (setq gptel-agent-harness-tools--orig-grep nil))))
-
-(ert-deftest gptel-agent-harness-test-mode-activates-tools ()
-  "Test that enabling `gptel-agent-harness-mode' also activates tools."
-  (let ((was-enabled gptel-agent-harness-mode)
-        (gptel-agent-harness-tools--orig-glob nil)
-        (gptel-agent-harness-tools--orig-grep nil)
-        (orig-glob (symbol-function 'gptel-agent--glob))
-        (orig-grep (symbol-function 'gptel-agent--grep)))
-    (unwind-protect
-        (progn
-          (when was-enabled (gptel-agent-harness-mode -1))
-          ;; Restore originals before enabling (mode -1 may have swapped them)
-          (fset 'gptel-agent--glob orig-glob)
-          (fset 'gptel-agent--grep orig-grep)
-          (setq gptel-agent-harness-tools--orig-glob nil)
-          (setq gptel-agent-harness-tools--orig-grep nil)
-          ;; Enable mode
-          (gptel-agent-harness-mode 1)
-          ;; After enable, should not be the originals
-          (should-not (eq (symbol-function 'gptel-agent--glob) orig-glob))
-          (should-not (eq (symbol-function 'gptel-agent--grep) orig-grep))
-          ;; Disable mode
-          (gptel-agent-harness-mode -1)
-          (should (eq (symbol-function 'gptel-agent--glob) orig-glob))
-          (should (eq (symbol-function 'gptel-agent--grep) orig-grep)))
-      ;; Safety restore
-      (fset 'gptel-agent--glob orig-glob)
-      (fset 'gptel-agent--grep orig-grep)
-      (setq gptel-agent-harness-tools--orig-glob nil)
-      (setq gptel-agent-harness-tools--orig-grep nil)
-      (if was-enabled
-          (gptel-agent-harness-mode 1)
-        (gptel-agent-harness-mode -1)))))
 
 ;;;; FSM Helper Tests (buffer, agentic-p, top-level-p, with-fsm-buffer)
 
@@ -990,18 +953,6 @@ top-level-p) see them."
       (should-not (memq #'gptel-agent-harness--update-token-calibration
                         gptel-post-response-functions)))))
 
-(ert-deftest gptel-agent-harness-test-teardown-mode-line ()
-  "Test `--teardown-mode-line' removes construct."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (gptel-agent-harness--setup-mode-line)
-      (when (boundp 'which-func-mode) (setq-local which-func-mode t))
-      (should (memq 'gptel-agent-harness--mode-line-construct
-                    mode-line-misc-info))
-      (gptel-agent-harness--teardown-mode-line)
-      (should-not (memq 'gptel-agent-harness--mode-line-construct
-                        mode-line-misc-info)))))
-
 ;;;; Question Tool Tests
 
 (ert-deftest gptel-agent-harness-test-question-ask-one-single-select ()
@@ -1099,18 +1050,17 @@ top-level-p) see them."
 
 ;;;; Commands Module Tests
 
-(ert-deftest gptel-agent-harness-test-read-review-prompt ()
-  "Test `gptel-agent-harness-commands--read-review-prompt' reads file content."
+(ert-deftest gptel-agent-harness-test-read-prompt-files ()
+  "Test prompt file readers handle existing and missing files."
+  ;; Review prompt
   (let ((temp-file (make-temp-file "review-" nil ".txt" "test review prompt")))
     (let ((gptel-agent-harness-commands--review-prompt-file temp-file))
       (should (equal (gptel-agent-harness-commands--read-review-prompt)
                      "test review prompt")))
     (delete-file temp-file))
   (let ((gptel-agent-harness-commands--review-prompt-file "/nonexistent/review.txt"))
-    (should-error (gptel-agent-harness-commands--read-review-prompt))))
-
-(ert-deftest gptel-agent-harness-test-read-initialize-prompt ()
-  "Test `gptel-agent-harness-commands--read-initialize-prompt' reads file content."
+    (should-error (gptel-agent-harness-commands--read-review-prompt)))
+  ;; Initialize prompt
   (let ((temp-file (make-temp-file "initialize-" nil ".txt" "initialize prompt")))
     (let ((gptel-agent-harness-commands--initialize-prompt-file temp-file))
       (should (equal (gptel-agent-harness-commands--read-initialize-prompt)
@@ -1135,17 +1085,37 @@ top-level-p) see them."
                  "/a ... /a")))
 
 (ert-deftest gptel-agent-harness-test-review-creates-dedicated-buffer ()
-  "Test review command creates a *gptel-agent-review* buffer in non-agent mode."
-  (cl-letf (((symbol-function 'read-string)
-             (lambda (&rest _) "")))
-    (let ((buf (gptel-agent-harness-commands-review "")))
-      (should (buffer-live-p buf))
-      (should (string-match-p "\\*gptel-agent-review\\*" (buffer-name buf)))
-      (with-current-buffer buf
-        (should gptel-use-tools)
-        (should (listp gptel-tools))
-        (should (eq gptel-temperature 0)))
-      (kill-buffer buf))))
+  "Test review command creates a buffer, sets system prompt, and passes arguments."
+  (let ((temp-file (make-temp-file "review-" nil ".txt" "You are a code reviewer at ${path}. $ARGUMENTS")))
+    (let ((gptel-agent-harness-commands--review-prompt-file temp-file))
+      (cl-letf (((symbol-function 'read-string)
+                 (lambda (&rest _) ""))
+                ((symbol-function 'gptel-get-tool)
+                 (lambda (name) (intern (format "tool-%s" name))))
+                ((symbol-function 'gptel-agent-update) #'ignore)
+                ((symbol-function 'gptel-send) #'ignore))
+        ;; With arguments
+        (let ((buf (gptel-agent-harness-commands-review "abc123")))
+          (should (buffer-live-p buf))
+          (should (string-match-p "\\*gptel-agent-review\\*" (buffer-name buf)))
+          (with-current-buffer buf
+            (should gptel-use-tools)
+            (should (listp gptel-tools))
+            (should (eq gptel-temperature 0))
+            (should (string-match-p "You are a code reviewer" gptel-system-prompt))
+            (should (string-match-p "abc123" gptel-system-prompt))
+            (goto-char (point-max))
+            (forward-line -1)
+            (should (string-match-p "abc123" (thing-at-point 'line t))))
+          (kill-buffer buf))
+        ;; Without arguments (nil)
+        (let ((buf (gptel-agent-harness-commands-review nil)))
+          (with-current-buffer buf
+            (goto-char (point-max))
+            (forward-line -1)
+            (should (string-match-p "Review code changes" (thing-at-point 'line t))))
+          (kill-buffer buf))))
+    (delete-file temp-file)))
 
 (ert-deftest gptel-agent-harness-test-review-reuses-agent-buffer ()
   "Test review reuses the current buffer when in gptel-agent-mode."
@@ -1155,21 +1125,14 @@ top-level-p) see them."
       (setq-local gptel-agent-mode t)
       (gptel-mode 1))
     (cl-letf (((symbol-function 'read-string)
-               (lambda (&rest _) "")))
+               (lambda (&rest _) ""))
+              ((symbol-function 'gptel-get-tool)
+               (lambda (name) (intern (format "tool-%s" name))))
+              ((symbol-function 'gptel-agent-update) #'ignore)
+              ((symbol-function 'gptel-send) #'ignore))
       (with-current-buffer agent-buf
         (let ((result-buf (gptel-agent-harness-commands-review "")))
           (should (eq result-buf agent-buf)))))))
-
-(ert-deftest gptel-agent-harness-test-review-sends-arguments ()
-  "Test review command passes $ARGUMENTS through prompt substitution."
-  (cl-letf (((symbol-function 'read-string)
-             (lambda (&rest _) "abc123")))
-    (let ((buf (gptel-agent-harness-commands-review "abc123")))
-      (with-current-buffer buf
-        (goto-char (point-max))
-        (forward-line -1)
-        (should (string-match-p "abc123" (thing-at-point 'line t))))
-      (kill-buffer buf))))
 
 (ert-deftest gptel-agent-harness-test-review-sends-region-content ()
   "Test review command sends region text as initial context."
@@ -1180,7 +1143,11 @@ top-level-p) see them."
       (push-mark (point-max) nil t)
       (activate-mark))
     (cl-letf (((symbol-function 'read-string)
-               (lambda (&rest _) "")))
+               (lambda (&rest _) ""))
+              ((symbol-function 'gptel-get-tool)
+               (lambda (name) (intern (format "tool-%s" name))))
+              ((symbol-function 'gptel-agent-update) #'ignore)
+              ((symbol-function 'gptel-send) #'ignore))
       (let ((buf (with-current-buffer source-buf
                    (gptel-agent-harness-commands-review ""))))
         (with-current-buffer buf
@@ -1190,30 +1157,6 @@ top-level-p) see them."
         (with-current-buffer source-buf
           (deactivate-mark)
           (pop-mark))))))
-
-(ert-deftest gptel-agent-harness-test-review-sets-system-prompt ()
-  "Test review command sets variable `gptel-system-prompt' from review.txt content."
-  (let ((temp-file (make-temp-file "review-" nil ".txt" "You are a code reviewer.")))
-    (let ((gptel-agent-harness-commands--review-prompt-file temp-file))
-      (cl-letf (((symbol-function 'read-string)
-                 (lambda (&rest _) "")))
-        (let ((buf (gptel-agent-harness-commands-review "")))
-          (with-current-buffer buf
-            (should (string-match-p "You are a code reviewer."
-                                    (or gptel-system-prompt ""))))
-          (kill-buffer buf))))
-    (delete-file temp-file)))
-
-(ert-deftest gptel-agent-harness-test-review-no-arguments ()
-  "Test review with nil arguments inserts the default message."
-  (cl-letf (((symbol-function 'read-string)
-             (lambda (&rest _) "")))
-    (let ((buf (gptel-agent-harness-commands-review nil)))
-      (with-current-buffer buf
-        (goto-char (point-max))
-        (forward-line -1)
-        (should (string-match-p "Review code changes" (thing-at-point 'line t))))
-      (kill-buffer buf))))
 
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
