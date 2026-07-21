@@ -160,16 +160,16 @@ Otherwise, a dedicated *gptel-agent-review* buffer is created."
          (region-content (and (use-region-p)
                               (buffer-substring (region-beginning)
                                                 (region-end))))
-         (in-gptel-buffererer (bound-and-true-p gptel-mode))
+         (in-gptel-buffer (bound-and-true-p gptel-mode))
          gptel-buf)
-    (if in-gptel-buffererer
+    (if in-gptel-buffer
         (setq gptel-buf (current-buffer))
       (setq gptel-buf (gptel (generate-new-buffer-name "*gptel-agent-review*")
                              nil region-content 'interactive)))
     (with-current-buffer gptel-buf
       (setq-local gptel-system-prompt prompt-content)
       (setq-local gptel-temperature 0)
-      (unless in-gptel-buffererer
+      (unless in-gptel-buffer
         (setq default-directory (or (and (boundp 'project-local-vars)
                                          (let ((proj (project-current)))
                                            (and proj (project-root proj))))
