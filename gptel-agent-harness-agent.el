@@ -80,7 +80,7 @@ Replaces `gptel-agent-dirs' when the harness is enabled."
     `(progn
        (defun ,func-name (&optional project-dir)
          (interactive
-          (list (if-let ((proj (project-current)))
+          (list (if-let* ((proj (project-current)))
                     (project-root proj)
                   default-directory)))
          (when ',mcp-servers
