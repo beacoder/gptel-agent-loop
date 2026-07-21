@@ -36,10 +36,11 @@
    * Provides `gptel-opencode-agent` with OpenCode similar behavior and capabilities
    * Uses agent definitions from `gptel-agent-harness-agent-dirs`.
 
-6. **Project initialization**
+6. **Project initialization & Code review**
 
    * `gptel-agent-harness-commands-initialize` creates/updates `AGENTS.md` for a project via a dedicated LLM session.
-   * Uses the initialize prompt from `prompts/initialize.txt`.
+   * `gptel-agent-harness-commands-review` performs code review of uncommitted changes, specific commits, branches, or PRs.
+   * Uses prompts from `prompts/initialize.txt` and `prompts/review.txt`.
 
 The goal is to make gptel-agent behave more like a reliable coding agent, such as OpenCode.
 
@@ -590,11 +591,13 @@ Or from within gptel:
 
 Directories containing agent definition files.
 
-Default:
+Default (relative to the package installation directory):
 
 ```elisp
 (setq gptel-agent-harness-agent-dirs
-      (list (expand-file-name "agents" user-emacs-directory)))
+      (list (expand-file-name
+             "agents"
+             (file-name-directory (locate-library "gptel-agent-harness")))))
 ```
 
 Example:
@@ -629,6 +632,45 @@ If a region is active when calling, the selected text is sent as initial context
 
 ---
 
+# Code Review
+
+`gptel-agent-harness-commands-review` performs an LLM-powered code review using
+the review prompt from `prompts/review.txt`.
+
+```
+M-x gptel-agent-harness-commands-review
+```
+
+### Arguments
+
+The command accepts an optional argument that determines what to review:
+
+* **Empty/nil**: Review all uncommitted changes (default)
+* **Commit hash**: Review a specific commit (40-char SHA or short hash)
+* **Branch name**: Compare current branch to the specified branch
+* **PR URL or number**: Review the pull request
+
+### Behavior
+
+* If called from a buffer where `gptel-agent-mode` is active, output goes to that buffer.
+* Otherwise, a dedicated `*gptel-agent-review*` buffer is created with full agent tooling.
+* If a region is active, the selected text is sent as initial context.
+
+### Example
+
+```elisp
+;; Review uncommitted changes
+(gptel-agent-harness-commands-review nil)
+
+;; Review a specific commit
+(gptel-agent-harness-commands-review "abc1234")
+
+;; Review against a branch
+(gptel-agent-harness-commands-review "main")
+```
+
+---
+
 # Example Configuration
 
 ```elisp
@@ -651,7 +693,13 @@ If a region is active when calling, the selected text is sent as initial context
     (gptel-agent-harness-mode 1)
     (gptel-agent-update)
     (add-to-list 'gptel-agent-harness-context-windows
-                 '("openai/gpt-oss-120b" . 128000))))
+                 '("openai/gpt-oss-120b" . 128000))
+    ;; Optional keybindings
+    (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
+    (global-set-key (kbd "C-c g r") #'gptel-agent-harness-commands-review)
+    (global-set-key (kbd "C-c g i") #'gptel-agent-harness-commands-initialize)
+    (global-set-key (kbd "C-c g s") #'gptel-agent-harness-restore-session)
+    (global-set-key (kbd "C-c g l") #'gptel-agent-harness-restore-latest-session)))
 ```
 
 ---
@@ -664,12 +712,13 @@ site-lisp/
 ├── gptel-agent-harness-session.el  # Session: auto-save, title generation, preview, restore
 ├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
-├── gptel-agent-harness-commands.el # Commands (project initialization)
+├── gptel-agent-harness-commands.el # Commands (initialize, review)
 ├── gptel-agent-harness-test.el     # ERT test suite
 ├── prompts/
 │   ├── compact.txt                 # Context compaction prompt
-│   ├── title.txt                   # Session title generation prompt
-│   └── initialize.txt              # Project initialization prompt
+│   ├── initialize.txt              # Project initialization prompt
+│   ├── review.txt                  # Code review prompt
+│   └── title.txt                   # Session title generation prompt
 └── agents/                         # Agent definition files
 ```
 
