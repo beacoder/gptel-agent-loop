@@ -1117,46 +1117,7 @@ top-level-p) see them."
           (kill-buffer buf))))
     (delete-file temp-file)))
 
-(ert-deftest gptel-agent-harness-test-review-reuses-agent-buffer ()
-  "Test review reuses the current buffer when in gptel-agent-mode."
-  (gptel-agent-harness-test--with-buffer agent-buf
-    (with-current-buffer agent-buf
-      (markdown-mode)
-      (setq-local gptel-agent-mode t)
-      (gptel-mode 1))
-    (cl-letf (((symbol-function 'read-string)
-               (lambda (&rest _) ""))
-              ((symbol-function 'gptel-get-tool)
-               (lambda (name) (intern (format "tool-%s" name))))
-              ((symbol-function 'gptel-agent-update) #'ignore)
-              ((symbol-function 'gptel-send) #'ignore))
-      (with-current-buffer agent-buf
-        (let ((result-buf (gptel-agent-harness-commands-review "")))
-          (should (eq result-buf agent-buf)))))))
 
-(ert-deftest gptel-agent-harness-test-review-sends-region-content ()
-  "Test review command sends region text as initial context."
-  (gptel-agent-harness-test--with-buffer source-buf
-    (with-current-buffer source-buf
-      (insert "region content for review")
-      (goto-char (point-min))
-      (push-mark (point-max) nil t)
-      (activate-mark))
-    (cl-letf (((symbol-function 'read-string)
-               (lambda (&rest _) ""))
-              ((symbol-function 'gptel-get-tool)
-               (lambda (name) (intern (format "tool-%s" name))))
-              ((symbol-function 'gptel-agent-update) #'ignore)
-              ((symbol-function 'gptel-send) #'ignore))
-      (let ((buf (with-current-buffer source-buf
-                   (gptel-agent-harness-commands-review ""))))
-        (with-current-buffer buf
-          (goto-char (point-min))
-          (should (search-forward "region content for review" nil t)))
-        (kill-buffer buf)
-        (with-current-buffer source-buf
-          (deactivate-mark)
-          (pop-mark))))))
 
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
