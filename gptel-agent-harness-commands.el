@@ -148,7 +148,7 @@ ARGUMENTS can be:
 
 If region is active, the selected text is sent as initial context.
 
-If called from a buffer where `gptel-agent-mode' is enabled, output goes
+If called from a buffer where `gptel-mode' is enabled, output goes
 to that buffer.
 Otherwise, a dedicated *gptel-agent-review* buffer is created."
   (interactive
@@ -160,7 +160,7 @@ Otherwise, a dedicated *gptel-agent-review* buffer is created."
          (region-content (and (use-region-p)
                               (buffer-substring (region-beginning)
                                                 (region-end))))
-         (in-agent-buffer (bound-and-true-p gptel-agent-mode))
+         (in-agent-buffer (bound-and-true-p gptel-mode))
          gptel-buf)
     (if in-agent-buffer
         (setq gptel-buf (current-buffer))
