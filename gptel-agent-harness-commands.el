@@ -28,6 +28,7 @@
 
 (require 'gptel)
 (require 'gptel-agent)
+(require 'gptel-agent-harness-session)
 (require 'project)
 
 (defconst gptel-agent-harness-commands--initialize-prompt-file
@@ -113,6 +114,7 @@ user is prompted to provide extra instructions."
                  nil nil 'interactive)))
     (with-current-buffer gptel-buf
       (setq default-directory project-dir)
+      (setq gptel-agent-harness--project-dir project-dir)
       (gptel-agent-update)
       ;; Enable tools for this buffer
       (setq-local gptel-use-tools t)
@@ -121,6 +123,7 @@ user is prompted to provide extra instructions."
                    (mapcar #'gptel-get-tool
                            '("TodoWrite" "Glob" "Grep" "Read" "Insert"
                              "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
+      (gptel-agent-harness--setup-session)
       (gptel--update-status " Initializing..." 'warning)
       (goto-char (point-max))
       (insert (format
@@ -156,6 +159,7 @@ A dedicated *gptel-agent-review* buffer is created for the review."
       (setq default-directory (or (and (project-current)
                                        (project-root (project-current)))
                                   default-directory))
+      (setq gptel-agent-harness--project-dir default-directory)
       (gptel-agent-update)
       (setq-local gptel-use-tools t)
       (setq-local gptel-tools
@@ -163,6 +167,7 @@ A dedicated *gptel-agent-review* buffer is created for the review."
                    (mapcar #'gptel-get-tool
                            '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert"
                              "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
+      (gptel-agent-harness--setup-session)
       (gptel--update-status " Reviewing..." 'warning)
       (goto-char (point-max))
       (insert (format "Review code changes%s.\n"
