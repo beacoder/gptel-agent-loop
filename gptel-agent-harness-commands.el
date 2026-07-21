@@ -215,18 +215,32 @@ buffer.  The resulting summary is inserted at the end of the buffer."
     (goto-char (point-max))
     (insert "Summarize current conversation.\n")
     (gptel--update-status " Summarizing..." 'warning)
-    (gptel-request conversation
-      :system system-prompt
-      :callback (lambda (response info)
-                  (if (not response)
-                      (progn
-                        (message "Summary request failed: %s" (plist-get info :status))
-                        (gptel--update-status  " Failed" 'error))
-                    (with-current-buffer buf
-                      (goto-char (point-max))
-                      (unless (bolp) (insert "\n"))
-                      (insert "\n" response "\n")
-                      (gptel--update-status  " Ready" 'success)))))))
+    (let ((gptel-use-tools nil)
+          (gptel-use-context nil)
+          (gptel-stream nil))
+      (gptel-request conversation
+        :system system-prompt
+        :stream nil
+        :callback (lambda (response info)
+                    (pcase response
+                      ((pred stringp)
+                       (with-current-buffer buf
+                         (goto-char (point-max))
+                         (insert "\n" response "\n")
+                         (gptel-agent-harness--auto-save-session)
+                         (gptel--update-status " Ready" 'success)))
+                      (`(reasoning . ,_)   ;skip reasoning, await actual content
+                       (gptel--update-status " Summarizing..." 'warning))
+                      (`t                   ;streaming end-of-stream marker
+                       (gptel--update-status " Ready" 'success))
+                      (`abort
+                       (message "Summary request aborted")
+                       (gptel--update-status " Aborted" 'error))
+                      (_
+                       (if (member (plist-get info :http-status) '("200" "100"))
+                           (gptel--update-status " Ready" 'success)
+                         (message "Summary request failed: %s" (plist-get info :status))
+                         (gptel--update-status " Failed" 'error)))))))))
 
 (provide 'gptel-agent-harness-commands)
 
