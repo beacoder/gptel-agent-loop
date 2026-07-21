@@ -89,7 +89,7 @@ user is prompted to provide extra instructions.
 
 If region is active, the selected text is sent as initial context."
   (interactive
-   (let* ((detected (if-let ((proj (project-current)))
+   (let* ((detected (if-let* ((proj (project-current)))
                         (project-root proj)
                       default-directory))
           (proj-name (file-name-nondirectory
