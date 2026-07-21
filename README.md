@@ -36,11 +36,12 @@
    * Provides `gptel-opencode-agent` with OpenCode similar behavior and capabilities
    * Uses agent definitions from `gptel-agent-harness-agent-dirs`.
 
-6. **Project initialization & Code review**
+6. **Project initialization, Code review & Conversation summary**
 
    * `gptel-agent-harness-commands-initialize` creates/updates `AGENTS.md` for a project via a dedicated LLM session.
    * `gptel-agent-harness-commands-review` performs code review of uncommitted changes, specific commits, branches, or PRs.
-   * Uses prompts from `prompts/initialize.txt` and `prompts/review.txt`.
+   * `gptel-agent-harness-commands-summary` summarizes the current gptel buffer conversation in PR-description style.
+   * Uses prompts from `prompts/initialize.txt`, `prompts/review.txt`, and `prompts/summary.txt`.
 
 The goal is to make gptel-agent behave more like a reliable coding agent, such as OpenCode.
 
@@ -667,6 +668,42 @@ The command accepts an optional argument that determines what to review:
 
 ---
 
+# Conversation Summary
+
+`gptel-agent-harness-commands-summary` generates a concise PR-description-style
+summary of the current gptel buffer conversation.
+
+```
+M-x gptel-agent-harness-commands-summary
+```
+
+### How It Works
+
+The command uses `prompts/summary.txt` as the system prompt and sends the
+buffer's conversation history as user input via `gptel-request`. The resulting
+summary is inserted at the end of the buffer.
+
+```
+current gptel buffer
+        |
+        v
+capture conversation (full buffer or active region)
+        |
+        v
+gptel-request with summary.txt as system prompt
+        |
+        v
+insert summary at end of buffer
+```
+
+### Region Support
+
+When the region is active, only the selected text is sent as input instead of
+the full buffer content. This is useful for summarizing a specific portion of a
+long conversation.
+
+---
+
 # Example Configuration
 
 ```elisp
@@ -694,6 +731,7 @@ The command accepts an optional argument that determines what to review:
     (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
     (global-set-key (kbd "C-c g r") #'gptel-agent-harness-commands-review)
     (global-set-key (kbd "C-c g i") #'gptel-agent-harness-commands-initialize)
+    (global-set-key (kbd "C-c g u") #'gptel-agent-harness-commands-summary)
     (global-set-key (kbd "C-c g s") #'gptel-agent-harness-restore-session)
     (global-set-key (kbd "C-c g l") #'gptel-agent-harness-restore-latest-session)))
 ```
@@ -708,12 +746,13 @@ site-lisp/
 ├── gptel-agent-harness-session.el  # Session: auto-save, title generation, preview, restore
 ├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
-├── gptel-agent-harness-commands.el # Commands (initialize, review)
+├── gptel-agent-harness-commands.el # Commands (initialize, review, summary)
 ├── gptel-agent-harness-test.el     # ERT test suite
 ├── prompts/
 │   ├── compact.txt                 # Context compaction prompt
 │   ├── initialize.txt              # Project initialization prompt
 │   ├── review.txt                  # Code review prompt
+│   ├── summary.txt                 # Conversation summary prompt
 │   └── title.txt                   # Session title generation prompt
 └── agents/                         # Agent definition files
 ```
