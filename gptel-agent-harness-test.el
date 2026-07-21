@@ -586,6 +586,67 @@ top-level-p) see them."
             (with-temp-buffer
               (insert-file-contents file)
               (should (search-forward "version-2" nil t)))))))))
+
+;;;; Compaction Previous-Summary Extraction Test
+
+(ert-deftest gptel-agent-harness-test-compaction-prev-summary-extraction ()
+  "Test step 3 wraps old compacted summary in <previous-summary> tags
+even when no gptel=response text properties remain after step 2 deletion.
+This is the scenario for 2nd+ compactions — the original code failed here
+because it used `text-property-search-forward' which always returns nil
+after the first compaction."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-verbose nil)
+        (captured-content nil))
+    (let ((prompt-file (make-temp-file "compact-prompt-" nil ".txt"
+                                       "compact test prompt")))
+      (unwind-protect
+          (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+            (gptel-agent-harness-test--with-buffer buf
+              (with-current-buffer buf
+                (gptel-agent-harness-test--setup-gptel-buffer buf)
+                (setq-local gptel-agent-harness--compacting-p nil)
+                ;; Simulate after first compaction: header + old summary
+                ;; with NO gptel text properties in the old content.
+                (insert "**[Compacted Summary]**\n\n")
+                (insert "Old summary: fixed auth bug, added token refresh.\n")
+                ;; Append a current round that HAS gptel=response so
+                ;; step 2 finds and deletes it.
+                (let ((round-start (point)))
+                  (insert "I'll now add dark mode support.")
+                  (put-text-property round-start (point-max) 'gptel 'response))
+                ;; Override gptel-agent-compact to capture buffer state
+                ;; right before the LLM request is made.
+                (cl-letf (((symbol-function 'gptel-agent-compact)
+                           (lambda (_prompt callback)
+                             (setq captured-content (buffer-string))
+                             (when (functionp callback) (funcall callback)))))
+                  (let* ((fsm (gptel-agent-harness-test--make-fsm buf
+                                 :handlers gptel-send--handlers
+                                 :tools (vector (list :type "function"
+                                                      :function (list :name "test")))
+                                 :messages (vector
+                                            (list :role "user" :content "fix login")
+                                            (list :role "user" :content "add dark mode")))))
+                    (gptel-agent-harness--compact fsm)
+                    ;; 1. Old summary wrapped in <previous-summary> tags
+                    (should (string-match-p "<previous-summary>"
+                                            captured-content))
+                    (should (string-match-p "</previous-summary>"
+                                            captured-content))
+                    (should (string-match-p "Old summary: fixed auth bug"
+                                            captured-content))
+                    ;; 2. Current round deleted by step 2 — not sent to LLM
+                    (should-not (string-match-p "dark mode support"
+                                                captured-content))
+                    ;; 3. Header is consumed by gptel-agent-compact later;
+                    ;;    in our stub capture it is still present.
+                    (should (string-match-p
+                             "\\*\\*\\[Compacted Summary\\]\\*\\*"
+                             captured-content))
+                    (should (string-match-p
+                             "<previous-summary>" captured-content)))))))
+        (delete-file prompt-file)))))
 ;;;; Token Calibration Tests
 
 (ert-deftest gptel-agent-harness-test-calibration-updates-ratio ()
