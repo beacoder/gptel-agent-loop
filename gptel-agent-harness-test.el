@@ -1067,7 +1067,15 @@ top-level-p) see them."
                      "initialize prompt")))
     (delete-file temp-file))
   (let ((gptel-agent-harness-commands--initialize-prompt-file "/nonexistent/init.txt"))
-    (should-error (gptel-agent-harness-commands--read-initialize-prompt))))
+    (should-error (gptel-agent-harness-commands--read-initialize-prompt)))
+  ;; Summary prompt
+  (let ((temp-file (make-temp-file "summary-" nil ".txt" "Summarize this.")))
+    (let ((gptel-agent-harness-commands--summary-prompt-file temp-file))
+      (should (equal (gptel-agent-harness-commands--read-summary-prompt)
+                     "Summarize this.")))
+    (delete-file temp-file))
+  (let ((gptel-agent-harness-commands--summary-prompt-file "/nonexistent/summary.txt"))
+    (should-error (gptel-agent-harness-commands--read-summary-prompt))))
 
 (ert-deftest gptel-agent-harness-test-substitute-placeholders ()
   "Test `gptel-agent-harness-commands--substitute-placeholders' replaces ${path} and $ARGUMENTS."
@@ -1116,6 +1124,67 @@ top-level-p) see them."
             (should (string-match-p "Review code changes" (thing-at-point 'line t))))
           (kill-buffer buf))))
     (delete-file temp-file)))
+
+(ert-deftest gptel-agent-harness-test-summary-requires-gptel-mode ()
+  "Test summary command errors when not in a gptel buffer."
+  (with-temp-buffer
+    (setq-local gptel-mode nil)
+    (should-error (gptel-agent-harness-commands-summary)
+                  :type 'user-error)))
+
+(ert-deftest gptel-agent-harness-test-summary-sends-request ()
+  "Test summary command uses buffer content as input and prompt as system."
+  (let* ((temp-file (make-temp-file "summary-" nil ".txt" "You are a summarizer."))
+         (gptel-agent-harness-commands--summary-prompt-file temp-file)
+         (captured-content nil)
+         (captured-system nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (content &rest args)
+                     (setq captured-content content)
+                     (setq captured-system (plist-get args :system))))
+                  ((symbol-function 'gptel--update-status)
+                   (lambda (&rest _) nil)))
+          (with-temp-buffer
+            (setq-local gptel-mode t)
+            (insert "User: hello\nAssistant: hi there\n")
+            (gptel-agent-harness-commands-summary)
+            ;; Should have inserted the marker text
+            (should (string-match-p "Summarize current conversation"
+                                    (buffer-string)))
+            ;; gptel-request should have been called with buffer content
+            (should (string-match-p "User: hello" captured-content))
+            (should (string-match-p "Assistant: hi there" captured-content))
+            ;; System prompt should be from the file
+            (should (equal captured-system "You are a summarizer."))))
+      (delete-file temp-file))))
+
+(ert-deftest gptel-agent-harness-test-summary-uses-region ()
+  "Test summary command uses active region when set."
+  (let* ((temp-file (make-temp-file "summary-" nil ".txt" "Summarize."))
+         (gptel-agent-harness-commands--summary-prompt-file temp-file)
+         (captured-content nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (content &rest args)
+                     (setq captured-content content)))
+                  ((symbol-function 'gptel--update-status)
+                   (lambda (&rest _) nil)))
+          (with-temp-buffer
+            (setq-local gptel-mode t)
+            (insert "line 1\nline 2\nline 3\n")
+            ;; Activate region on "line 2\n"
+            (goto-char (point-min))
+            (forward-line 1)
+            (set-mark (point))
+            (forward-line 1)
+            (activate-mark)
+            (gptel-agent-harness-commands-summary)
+            ;; Should only capture the region
+            (should (equal captured-content "line 2\n"))
+            ;; Mark should be deactivated
+            (should-not mark-active)))
+      (delete-file temp-file))))
 
 
 
