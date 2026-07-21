@@ -628,8 +628,6 @@ When called interactively, it detects the current project root and prompts for
 confirmation.  You can provide extra instructions via the `$ARGUMENTS`
 placeholder in the initialize prompt.
 
-If a region is active when calling, the selected text is sent as initial context.
-
 ---
 
 # Code Review
@@ -652,9 +650,7 @@ The command accepts an optional argument that determines what to review:
 
 ### Behavior
 
-* If called from a buffer where `gptel-agent-mode` is active, output goes to that buffer.
-* Otherwise, a dedicated `*gptel-agent-review*` buffer is created with full agent tooling.
-* If a region is active, the selected text is sent as initial context.
+* A dedicated `*gptel-agent-review*` buffer is created with full agent tooling.
 
 ### Example
 
