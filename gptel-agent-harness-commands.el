@@ -85,9 +85,7 @@ user, who can confirm it or provide a different one.
 
 EXTRA is additional instructions to substitute into the $ARGUMENTS
 placeholder of the initialize prompt.  When called interactively, the
-user is prompted to provide extra instructions.
-
-If region is active, the selected text is sent as initial context."
+user is prompted to provide extra instructions."
   (interactive
    (let* ((detected (if-let* ((proj (project-current)))
                         (project-root proj)
@@ -106,16 +104,13 @@ If region is active, the selected text is sent as initial context."
                           raw-prompt project-dir extra))
          (proj-name (file-name-nondirectory
                      (directory-file-name project-dir)))
-         (region-content (and (use-region-p)
-                              (buffer-substring (region-beginning)
-                                                (region-end))))
          ;; Set up gptel variables for the new buffer
          (gptel-system-prompt prompt-content)
          (gptel-temperature 0)
          (gptel-buf
           (gptel (generate-new-buffer-name
                   (format "*gptel-agent-init:%s*" proj-name))
-                 nil region-content 'interactive)))
+                 nil nil 'interactive)))
     (with-current-buffer gptel-buf
       (setq default-directory project-dir)
       (gptel-agent-update)
@@ -127,12 +122,11 @@ If region is active, the selected text is sent as initial context."
                            '("TodoWrite" "Glob" "Grep" "Read" "Insert"
                              "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
       (gptel--update-status " Initializing..." 'warning)
-      (unless region-content
-        (goto-char (point-max))
-        (insert (format
-                 "Analyze the repository at %s and create/update AGENTS.md."
-                 project-dir))
-        (insert "\n"))
+      (goto-char (point-max))
+      (insert (format
+               "Analyze the repository at %s and create/update AGENTS.md."
+               project-dir))
+      (insert "\n")
       (gptel-send))
     gptel-buf))
 
@@ -146,49 +140,35 @@ ARGUMENTS can be:
 - A branch name: Compare current branch to the specified branch
 - A PR URL or number: Review the pull request
 
-If region is active, the selected text is sent as initial context.
-
-If called from a buffer where `gptel-mode' is enabled, output goes
-to that buffer.
-Otherwise, a dedicated *gptel-agent-review* buffer is created."
+A dedicated *gptel-agent-review* buffer is created for the review."
   (interactive
    (let ((arg-str (read-string "Review arguments (commit/branch/PR, or empty for uncommitted changes): ")))
      (list (and (not (string-blank-p arg-str)) arg-str))))
   (let* ((raw-prompt (gptel-agent-harness-commands--read-review-prompt))
          (prompt-content (gptel-agent-harness-commands--substitute-placeholders
                           raw-prompt default-directory arguments))
-         (region-content (and (use-region-p)
-                              (buffer-substring (region-beginning)
-                                                (region-end))))
-         (in-gptel-buffer (bound-and-true-p gptel-mode))
          gptel-buf)
-    (if in-gptel-buffer
-        (setq gptel-buf (current-buffer))
-      (setq gptel-buf (gptel (generate-new-buffer-name "*gptel-agent-review*")
-                             nil region-content 'interactive)))
+    (setq gptel-buf (gptel (generate-new-buffer-name "*gptel-agent-review*")
+                           nil nil 'interactive))
     (with-current-buffer gptel-buf
       (setq-local gptel-system-prompt prompt-content)
       (setq-local gptel-temperature 0)
-      (unless in-gptel-buffer
-        (setq default-directory (or (and (boundp 'project-local-vars)
-                                         (let ((proj (project-current)))
-                                           (and proj (project-root proj))))
-                                    default-directory))
-        (gptel-agent-update)
-        (setq-local gptel-use-tools t)
-        (setq-local gptel-tools
-                    (flatten-list
-                     (mapcar #'gptel-get-tool
-                             '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert"
-                               "Edit" "Write" "Mkdir" "Bash" "Skill" "Question")))))
+      (setq default-directory (or (and (project-current)
+                                       (project-root (project-current)))
+                                  default-directory))
+      (gptel-agent-update)
+      (setq-local gptel-use-tools t)
+      (setq-local gptel-tools
+                  (flatten-list
+                   (mapcar #'gptel-get-tool
+                           '("Agent" "TodoWrite" "Glob" "Grep" "Read" "Insert"
+                             "Edit" "Write" "Mkdir" "Bash" "Skill" "Question"))))
       (gptel--update-status " Reviewing..." 'warning)
       (goto-char (point-max))
-      (if region-content
-          (insert region-content "\n")
-        (insert (format "Review code changes%s.\n"
-                        (if arguments
-                            (format " with arguments: %s" arguments)
-                          ""))))
+      (insert (format "Review code changes%s.\n"
+                      (if arguments
+                          (format " with arguments: %s" arguments)
+                        "")))
       (gptel-send)
       gptel-buf)))
 
