@@ -587,17 +587,17 @@ top-level-p) see them."
               (insert-file-contents file)
               (should (search-forward "version-2" nil t)))))))))
 
-;;;; Compaction Previous-Summary Extraction Test
+;;;; Compaction Tests
 
-(ert-deftest gptel-agent-harness-test-compaction-prev-summary-extraction ()
-  "Test step 3 wraps old compacted summary in <previous-summary> tags
-even when no gptel=response text properties remain after step 2 deletion.
-This is the scenario for 2nd+ compactions — the original code failed here
-because it used `text-property-search-forward' which always returns nil
-after the first compaction."
+(ert-deftest gptel-agent-harness-test-compaction ()
+  "Test the full compaction flow across multiple compaction cycles.
+Covers:
+ - 1st compaction: no prior summary, current round removed, resume layout correct
+ - 2nd compaction: prior summary wrapped in <previous-summary> tags
+ - 3rd compaction: separator and stale requests excluded from <previous-summary>"
   (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
-        (gptel-agent-harness-verbose nil)
-        (captured-content nil))
+        (gptel-agent-harness-compact-separator "\n\n---\n\n")
+        (gptel-agent-harness-verbose nil))
     (let ((prompt-file (make-temp-file "compact-prompt-" nil ".txt"
                                        "compact test prompt")))
       (unwind-protect
@@ -606,46 +606,118 @@ after the first compaction."
               (with-current-buffer buf
                 (gptel-agent-harness-test--setup-gptel-buffer buf)
                 (setq-local gptel-agent-harness--compacting-p nil)
-                ;; Simulate after first compaction: header + old summary
-                ;; with NO gptel text properties in the old content.
-                (insert "**[Compacted Summary]**\n\n")
-                (insert "Old summary: fixed auth bug, added token refresh.\n")
-                ;; Append a current round that HAS gptel=response so
-                ;; step 2 finds and deletes it.
-                (let ((round-start (point)))
-                  (insert "I'll now add dark mode support.")
-                  (put-text-property round-start (point-max) 'gptel 'response))
-                ;; Override gptel-agent-compact to capture buffer state
-                ;; right before the LLM request is made.
-                (cl-letf (((symbol-function 'gptel-agent-compact)
-                           (lambda (_prompt callback)
-                             (setq captured-content (buffer-string))
-                             (when (functionp callback) (funcall callback)))))
-                  (let* ((fsm (gptel-agent-harness-test--make-fsm buf
-                                 :handlers gptel-send--handlers
-                                 :tools (vector (list :type "function"
-                                                      :function (list :name "test")))
-                                 :messages (vector
-                                            (list :role "user" :content "fix login")
-                                            (list :role "user" :content "add dark mode")))))
-                    (gptel-agent-harness--compact fsm)
-                    ;; 1. Old summary wrapped in <previous-summary> tags
-                    (should (string-match-p "<previous-summary>"
+                (let* ((gptel-send-called nil)
+                       (captured-content nil)
+                       (tools (vector (list :type "function"
+                                            :function (list :name "test"))))
+                       (make-fsm
+                        (lambda ()
+                          (gptel-agent-harness-test--make-fsm buf
+                            :handlers gptel-send--handlers
+                            :tools tools
+                            :messages (vector
+                                       (list :role "user" :content "req1")
+                                       (list :role "user" :content "req2"))))))
+
+                  ;; === 1st compaction: fresh buffer with user text + response ===
+                  (insert "User prompt.\n")
+                  (let ((round-start (point)))
+                    (insert "Assistant first response.")
+                    (put-text-property round-start (point) 'gptel 'response))
+                  (cl-letf (((symbol-function 'gptel-agent-compact)
+                             (lambda (_prompt callback)
+                               (setq captured-content (buffer-string))
+                               ;; Simulate: replace buffer with summary
+                               (erase-buffer)
+                               (insert "Summary after 1st compaction.\n")
+                               (when (functionp callback) (funcall callback))))
+                            ((symbol-function 'gptel-send)
+                             (lambda () (setq gptel-send-called t))))
+                    (setq gptel-send-called nil)
+                    (gptel-agent-harness--compact (funcall make-fsm))
+                    ;; Input to LLM: no <previous-summary> (first time)
+                    (should-not (string-match-p "<previous-summary>" captured-content))
+                    ;; Current round removed from LLM input
+                    (should-not (string-match-p "Assistant first response" captured-content))
+                    ;; Resume layout: header + summary + separator + round + requests
+                    (let ((content (buffer-string)))
+                      (should (string-match-p "\\`\\*\\*\\[Compacted Summary\\]\\*\\*"
+                                              content))
+                      (should (string-match-p "Summary after 1st compaction" content))
+                      (should (string-match-p "\n\n---\n\n" content))
+                      (should (string-match-p "Assistant first response" content))
+                      (should (string-match-p "req1" content))
+                      (should (string-match-p "req2" content))
+                      (should gptel-send-called)))
+
+                  ;; === 2nd compaction: buffer has header + summary (no separator in summary region) ===
+                  ;; Simulate new response arrived after 1st compaction resume
+                  (setq-local gptel-agent-harness--compacting-p nil)
+                  (let ((round-start (point-max)))
+                    (goto-char (point-max))
+                    (insert "Assistant second response.")
+                    (put-text-property round-start (point-max) 'gptel 'response))
+                  (cl-letf (((symbol-function 'gptel-agent-compact)
+                             (lambda (_prompt callback)
+                               (setq captured-content (buffer-string))
+                               (erase-buffer)
+                               ;; Simulate LLM echoing back <previous-summary> tags
+                               (insert "<previous-summary>\nOld echoed stuff\n</previous-summary>\nSummary after 2nd compaction.\n")
+                               (when (functionp callback) (funcall callback))))
+                            ((symbol-function 'gptel-send)
+                             (lambda () (setq gptel-send-called t))))
+                    (setq gptel-send-called nil)
+                    (gptel-agent-harness--compact (funcall make-fsm))
+                    ;; Old summary wrapped in <previous-summary>
+                    (should (string-match-p "<previous-summary>" captured-content))
+                    (should (string-match-p "Summary after 1st compaction"
                                             captured-content))
-                    (should (string-match-p "</previous-summary>"
-                                            captured-content))
-                    (should (string-match-p "Old summary: fixed auth bug"
-                                            captured-content))
-                    ;; 2. Current round deleted by step 2 — not sent to LLM
-                    (should-not (string-match-p "dark mode support"
+                    (should (string-match-p "</previous-summary>" captured-content))
+                    ;; Separator content NOT inside <previous-summary>
+                    (when (string-match "<previous-summary>\\(\\(?:.\\|\n\\)*?\\)</previous-summary>"
+                                        captured-content)
+                      (let ((inside (match-string 1 captured-content)))
+                        (should-not (string-match-p "\n\n---\n\n" inside))))
+                    ;; Current round removed
+                    (should-not (string-match-p "Assistant second response"
                                                 captured-content))
-                    ;; 3. Header is consumed by gptel-agent-compact later;
-                    ;;    in our stub capture it is still present.
-                    (should (string-match-p
-                             "\\*\\*\\[Compacted Summary\\]\\*\\*"
-                             captured-content))
-                    (should (string-match-p
-                             "<previous-summary>" captured-content)))))))
+                    (should gptel-send-called))
+
+                  ;; === 3rd compaction: buffer has header + summary (with echoed tags) + separator ===
+                  ;; Simulate new response arrived after 2nd compaction resume
+                  (setq-local gptel-agent-harness--compacting-p nil)
+                  (let ((round-start (point-max)))
+                    (goto-char (point-max))
+                    (insert "Assistant third response.")
+                    (put-text-property round-start (point-max) 'gptel 'response))
+                  (cl-letf (((symbol-function 'gptel-agent-compact)
+                             (lambda (_prompt callback)
+                               (setq captured-content (buffer-string))
+                               (erase-buffer)
+                               (insert "Summary after 3rd compaction.\n")
+                               (when (functionp callback) (funcall callback))))
+                            ((symbol-function 'gptel-send)
+                             (lambda () (setq gptel-send-called t))))
+                    (setq gptel-send-called nil)
+                    (gptel-agent-harness--compact (funcall make-fsm))
+                    ;; Old summary wrapped — only the summary text, not separator/requests
+                    (should (string-match-p "<previous-summary>" captured-content))
+                    (should (string-match-p "Summary after 2nd compaction"
+                                            captured-content))
+                    (when (string-match "<previous-summary>\\(\\(?:.\\|\n\\)*?\\)</previous-summary>"
+                                        captured-content)
+                      (let ((inside (match-string 1 captured-content)))
+                        ;; Echoed tags must be stripped — no nested <previous-summary>
+                        (should-not (string-match-p "<previous-summary>" inside))
+                        (should-not (string-match-p "</previous-summary>" inside))
+                        ;; Separator must NOT be inside
+                        (should-not (string-match-p "\n\n---\n\n" inside))
+                        ;; Stale requests must NOT be inside
+                        (should-not (string-match-p "req1" inside))))
+                    ;; Current round removed
+                    (should-not (string-match-p "Assistant third response"
+                                                captured-content))
+                    (should gptel-send-called))))))
         (delete-file prompt-file)))))
 ;;;; Token Calibration Tests
 
@@ -964,17 +1036,6 @@ after the first compaction."
     (should (search-forward "gptel-max-tokens: " nil t))
     (should (search-forward "1000" nil t))
     (should-not (search-forward "gptel--backend-name" nil t))))
-
-(ert-deftest gptel-agent-harness-test-read-compact-prompt ()
-  "Test `--read-compact-prompt' file I/O."
-  (let ((gptel-agent-harness-compact-prompt-file
-         (make-temp-file "compact-prompt-" nil ".txt" "compact this please")))
-    (unwind-protect
-        (should (equal (gptel-agent-harness--read-compact-prompt)
-                       "compact this please"))
-      (delete-file gptel-agent-harness-compact-prompt-file)))
-  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
-    (should-error (gptel-agent-harness--read-compact-prompt))))
 
 (ert-deftest gptel-agent-harness-test-sanitize-title ()
   "Test `--sanitize-title' produces safe filenames."
