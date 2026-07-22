@@ -710,30 +710,25 @@ long conversation.
 (use-package gptel-agent-harness
   :ensure t
   :config
-  (progn
-    (setq gptel-agent-harness-max-nudges 2
-          gptel-agent-harness-context-trigger 0.70
-          gptel-agent-harness-auto-save-session t
-          gptel-agent-harness-verbose t)
-    (require 'gptel-context)
-    ;; add task-completion-rules into llm context
-    (gptel-add-file
-     (expand-file-name
-      "rules/task-completion-rules.md"
-      (file-name-directory
-       (or (locate-library "gptel-agent-harness")
-           (error "gptel‑agent‑harness not found")))))
-    (gptel-agent-harness-mode 1)
-    (gptel-agent-update)
-    (add-to-list 'gptel-agent-harness-context-windows
-                 '("openai/gpt-oss-120b" . 128000))
-    ;; Optional keybindings
-    (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
-    (global-set-key (kbd "C-c g r") #'gptel-agent-harness-commands-review)
-    (global-set-key (kbd "C-c g i") #'gptel-agent-harness-commands-initialize)
-    (global-set-key (kbd "C-c g u") #'gptel-agent-harness-commands-summary)
-    (global-set-key (kbd "C-c g s") #'gptel-agent-harness-restore-session)
-    (global-set-key (kbd "C-c g l") #'gptel-agent-harness-restore-latest-session)))
+  (require 'gptel-context)
+  ;; MUST add task-completion-rules into llm context
+  (gptel-add-file
+   (expand-file-name
+    "rules/task-completion-rules.md"
+    (file-name-directory
+     (or (locate-library "gptel-agent-harness")
+         (error "gptel‑agent‑harness not found")))))
+  (gptel-agent-harness-mode 1)
+  (gptel-agent-update)
+  (add-to-list 'gptel-agent-harness-context-windows
+               '("openai/gpt-oss-120b" . 128000))
+  ;; Optional keybindings
+  (global-set-key (kbd "C-c g a") #'gptel-opencode-agent)
+  (global-set-key (kbd "C-c g r") #'gptel-agent-harness-commands-review)
+  (global-set-key (kbd "C-c g i") #'gptel-agent-harness-commands-initialize)
+  (global-set-key (kbd "C-c g u") #'gptel-agent-harness-commands-summary)
+  (global-set-key (kbd "C-c g s") #'gptel-agent-harness-restore-session)
+  (global-set-key (kbd "C-c g l") #'gptel-agent-harness-restore-latest-session))
 ```
 
 ---
