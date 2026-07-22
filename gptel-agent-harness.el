@@ -665,18 +665,38 @@ Also hides `which-function-mode' display as it provides no useful info
 in gptel buffers but consumes mode-line space."
   (unless (memq 'gptel-agent-harness--mode-line-construct
                 mode-line-misc-info)
-    (setq-local mode-line-misc-info
-                (append mode-line-misc-info
-                        '(gptel-agent-harness--mode-line-construct))))
+    (let ((tail (memq 'mode-line-misc-info mode-line-format)))
+      (if tail
+          ;; Insert our construct just before mode-line-misc-info in mode-line-format
+          (let ((before (cl-ldiff mode-line-format tail)))
+            (setq-local mode-line-format
+                        (append before
+                                (list 'gptel-agent-harness--mode-line-construct)
+                                tail)))
+        ;; Fallback: prepend to mode-line-misc-info
+        (setq-local mode-line-misc-info
+                    (append '(gptel-agent-harness--mode-line-construct)
+                            mode-line-misc-info)))))
   ;; Hide which-func from this buffer's mode-line without disabling the global mode
   (setq-local which-func-mode nil))
 
 (defun gptel-agent-harness--teardown-mode-line ()
   "Remove context ratio indicator from mode-line for the current buffer.
 Restores `which-func-mode' to its global default."
-  (setq-local mode-line-misc-info
-              (delq 'gptel-agent-harness--mode-line-construct
-                    mode-line-misc-info))
+  (when (local-variable-p 'mode-line-format)
+    (setq-local mode-line-format
+                (delq 'gptel-agent-harness--mode-line-construct
+                      mode-line-format))
+    ;; If mode-line-format is back to the global value, kill the local binding
+    (when (equal mode-line-format (default-value 'mode-line-format))
+      (kill-local-variable 'mode-line-format)))
+  ;; Also clean from mode-line-misc-info in case fallback path was used
+  (when (memq 'gptel-agent-harness--mode-line-construct mode-line-misc-info)
+    (setq-local mode-line-misc-info
+                (delq 'gptel-agent-harness--mode-line-construct
+                      mode-line-misc-info))
+    (when (equal mode-line-misc-info (default-value 'mode-line-misc-info))
+      (kill-local-variable 'mode-line-misc-info)))
   (kill-local-variable 'which-func-mode))
 
 ;;;; Token Calibration Setup
