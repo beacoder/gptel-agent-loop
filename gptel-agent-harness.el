@@ -513,7 +513,9 @@ Return non-nil if compaction was initiated, nil otherwise."
                         ""
                         old-summary))))
                 (unless (string-blank-p old-summary)
-                  (delete-region summary-start (point-max))
+                  ;; Replace entire buffer content with just header + old summary placeholder
+                  (delete-region (point-min) (point-max))
+                  (insert gptel-agent-harness-compact-header)
                   (insert
                    (format
                     "<previous-summary>\n%s\n</previous-summary>\n\n"
@@ -545,15 +547,13 @@ Return non-nil if compaction was initiated, nil otherwise."
                          ;; Async compaction success.
                          (condition-case resume-err
                              (progn
-                               ;; Rebuild:
-                               ;; header + summary + separator + round + requests
+                               ;; Rebuild: header + summary + separator + round + requests
                                (goto-char (point-min))
                                (insert gptel-agent-harness-compact-header)
                                (goto-char (point-max))
                                (insert gptel-agent-harness-compact-separator)
                                (when resume-round
-                                 (goto-char (point-max))
-                                 (insert resume-round))
+                                 (insert resume-round "\n\n"))
                                (insert
                                 (mapconcat #'identity
                                            resume-requests
