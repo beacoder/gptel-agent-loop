@@ -297,17 +297,25 @@ serialized content to *gptel-agent-harness-debug*."
            ;; Gemini :parts is a vector of (:text "...") plists
            (cl-loop for part across content
                     do (insert (or (and (stringp part) part)
-                                   (plist-get part :thinking)
-                                   (plist-get part :text)
+                                   (and (stringp (plist-get part :thinking))
+                                        (plist-get part :thinking))
+                                   (and (stringp (plist-get part :text))
+                                        (plist-get part :text))
                                    (format "%S" part)))))
           ((listp content)
            (dolist (part content)
              (cond
               ((stringp part) (insert part))
               ;; Thinking blocks (Claude extended thinking)
-              ((plist-get part :thinking) (insert (plist-get part :thinking)))
-              ((plist-get part :text) (insert (plist-get part :text)))
-              ((plist-get part :arguments) (insert (plist-get part :arguments)))
+              ((and (plist-get part :thinking)
+                    (stringp (plist-get part :thinking)))
+               (insert (plist-get part :thinking)))
+              ((and (plist-get part :text)
+                    (stringp (plist-get part :text)))
+               (insert (plist-get part :text)))
+              ((and (plist-get part :arguments)
+                    (stringp (plist-get part :arguments)))
+               (insert (plist-get part :arguments)))
               (t (insert (format "%S" part))))))
           (t (insert (format "%S" content))))
          ;; Tool calls (assistant messages with function invocations)
@@ -590,7 +598,12 @@ NEW-STATE is the optional new state to transition to."
     (cond
      ;; Before next LLM turn — check if compaction needed
      ((eq target 'WAIT)
-      (gptel-agent-harness--update-context-ratio machine)
+      (condition-case err
+          (gptel-agent-harness--update-context-ratio machine)
+        (error
+         (when gptel-agent-harness-verbose
+           (message "gptel-agent-harness: context ratio error (WAIT) — %s"
+                    (error-message-string err)))))
       (if (gptel-agent-harness--need-compaction-p machine)
           ;; If compact bails out, fall through to normal transition
           (unless (gptel-agent-harness--compact machine)
@@ -598,7 +611,12 @@ NEW-STATE is the optional new state to transition to."
         (funcall orig-fn machine new-state)))
      ;; LLM attempts to finish
      ((gptel-agent-harness--terminal-p target)
-      (gptel-agent-harness--update-context-ratio machine)
+      (condition-case err
+          (gptel-agent-harness--update-context-ratio machine)
+        (error
+         (when gptel-agent-harness-verbose
+           (message "gptel-agent-harness: context ratio error (terminal) — %s"
+                    (error-message-string err)))))
       (if (and (gptel-agent-harness--agentic-p machine)
                (gptel-agent-harness--top-level-p machine)
                (gptel-agent-harness--can-nudge-p machine))
