@@ -33,7 +33,7 @@
 
 5. **Custom agent definition**
 
-   * Provides `gptel-opencode-agent` with OpenCode similar behavior and capabilities
+   * Provides `gptel-opencode-agent` with OpenCode similar behavior and capabilities.
    * Uses agent definitions from `gptel-agent-harness-agent-dirs`.
 
 6. **Project initialization, Code review & Conversation summary**
