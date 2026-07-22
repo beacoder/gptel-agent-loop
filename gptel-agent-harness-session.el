@@ -437,7 +437,9 @@ This opens the file, enables `gptel-mode', and restores all state."
     ;; Restore tools from saved tool names when no preset handles it
     (when (and (bound-and-true-p gptel--tool-names) (not gptel--preset))
       (when-let* ((tools (cl-loop for tname in gptel--tool-names
-                                   for tool = (gptel-get-tool tname)
+                                   for tool = (with-demoted-errors
+                                                  "gptel-agent-harness: %S"
+                                                (gptel-get-tool tname))
                                    if tool collect tool)))
         (setq-local gptel-tools tools)
         (setq-local gptel-use-tools t)))
