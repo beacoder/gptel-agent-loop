@@ -663,8 +663,8 @@ Returns empty string if ratio is not yet computed or display is disabled."
   "Add context ratio indicator to mode-line for the current gptel buffer.
 Also hides `which-function-mode' display as it provides no useful info
 in gptel buffers but consumes mode-line space."
-  (unless (memq 'gptel-agent-harness--mode-line-construct
-                mode-line-misc-info)
+  (unless (or (memq 'gptel-agent-harness--mode-line-construct mode-line-format)
+              (memq 'gptel-agent-harness--mode-line-construct mode-line-misc-info))
     (let ((tail (memq 'mode-line-misc-info mode-line-format)))
       (if tail
           ;; Insert our construct just before mode-line-misc-info in mode-line-format
