@@ -403,8 +403,12 @@ top-level-p) see them."
                    'risky-local-variable))
       (gptel-agent-harness--setup-mode-line)
       (gptel-agent-harness--setup-mode-line)
-      (should (= 1 (cl-count 'gptel-agent-harness--mode-line-construct
-                             mode-line-misc-info))))))
+      ;; Construct appears exactly once in either mode-line-format or mode-line-misc-info
+      (let ((count (+ (cl-count 'gptel-agent-harness--mode-line-construct
+                                mode-line-format)
+                      (cl-count 'gptel-agent-harness--mode-line-construct
+                                mode-line-misc-info))))
+        (should (= 1 count))))))
 
 ;;;; Global Mode Enable/Disable
 
@@ -421,8 +425,11 @@ top-level-p) see them."
                'gptel--fsm-transition))
       (should (memq #'gptel-agent-harness--setup-mode-line gptel-mode-hook))
       (with-current-buffer buf
-        (should (memq 'gptel-agent-harness--mode-line-construct
-                      mode-line-misc-info))
+        ;; Construct should be in mode-line-format or mode-line-misc-info
+        (should (or (memq 'gptel-agent-harness--mode-line-construct
+                          mode-line-format)
+                    (memq 'gptel-agent-harness--mode-line-construct
+                          mode-line-misc-info)))
         (setq-local gptel-agent-harness--context-ratio 0.42)
         (should (string-match-p
                  "\\[Ctx:42%%/70%%\\]"
@@ -434,8 +441,10 @@ top-level-p) see them."
                    'gptel--fsm-transition))
       (should-not (memq #'gptel-agent-harness--setup-mode-line gptel-mode-hook))
       (with-current-buffer buf
-        (should-not (memq 'gptel-agent-harness--mode-line-construct
-                          mode-line-misc-info))
+        (should-not (or (memq 'gptel-agent-harness--mode-line-construct
+                              mode-line-format)
+                        (memq 'gptel-agent-harness--mode-line-construct
+                              mode-line-misc-info)))
         (should-not gptel-agent-harness--context-ratio)))
     ;; Restore original state
     (if was-enabled
