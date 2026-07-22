@@ -472,7 +472,6 @@ Return non-nil if compaction was initiated, nil otherwise."
         (message "gptel-agent-harness: compact skipped — buffer not live"))
       (cl-return-from gptel-agent-harness--compact nil))
     (with-current-buffer buf
-      ;; 1. Save recent user requests (excluding nudges)
       (let ((requests (gptel-agent-harness--recent-user-requests fsm)))
         (unless requests
           (when gptel-agent-harness-verbose
@@ -482,76 +481,72 @@ Return non-nil if compaction was initiated, nil otherwise."
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness: compacting context %.1f%%"
                    (* 100 (gptel-agent-harness--context-ratio-for-fsm fsm))))
-        ;; 2. Save and remove the current round from the buffer before
-        ;;    compaction so the compaction LLM only summarizes older
-        ;;    context, not the in-flight assistant response + tool results.
         (let (current-round-content)
+          ;; 1. Save and remove current round (last response → end of buffer)
+          ;;    so the compaction LLM only summarizes older context.
           (when-let* ((round (gptel-agent-harness--current-round-content)))
             (setq current-round-content round)
-            ;; Delete from the start of the last response to end of buffer
             (save-excursion
               (goto-char (point-max))
               (when-let* ((props (text-property-search-backward 'gptel 'response t))
                           (resp-start (prop-match-beginning props)))
                 (delete-region resp-start (point-max)))))
-          ;; 3. If a previous compaction block exists, extract the old compacted
-          ;;    summary and wrap it in <previous-summary> tags.  The compact
-          ;;    prompt instructs the LLM to treat this as an anchored summary
-          ;;    to update (preserving, removing, merging facts).  Without this
-          ;;    wrapping, the LLM sees it as raw conversation text and
-          ;;    re-summarizes from scratch, making the summary grow unboundedly.
-          ;;    After step 2 deleted the current round, the buffer contains
-          ;;    only header + old summary (if a previous compaction happened).
-          ;;    So the old summary is everything after the header to point-max.
+          ;; 2. Wrap old summary in <previous-summary> tags for the LLM.
+          ;;    Extract only up to the separator, strip any echoed tags.
           (save-excursion
             (goto-char (point-min))
             (when (search-forward gptel-agent-harness-compact-header nil t)
-              (let ((old-summary (string-trim
-                                  (buffer-substring-no-properties
-                                   (point) (point-max)))))
+              (let* ((summary-start (point))
+                     (summary-end
+                      (or (save-excursion
+                            (when (search-forward gptel-agent-harness-compact-separator nil t)
+                              (match-beginning 0)))
+                          (point-max)))
+                     (old-summary (string-trim
+                                   (buffer-substring-no-properties
+                                    summary-start summary-end)))
+                     (old-summary
+                      (string-trim
+                       (replace-regexp-in-string
+                        "</?previous-summary>" "" old-summary))))
                 (unless (string-blank-p old-summary)
-                  (delete-region (point) (point-max))
+                  (delete-region summary-start (point-max))
                   (insert
                    (format
                     "<previous-summary>\n%s\n</previous-summary>\n\n"
                     old-summary))))))
-          ;; 4. Stop old FSM
+          ;; 3. Abort current request and run compaction.
           (gptel-abort buf)
-          ;; Move point to end so gptel-agent-compact sees the full buffer
           (goto-char (point-max))
-          ;; 5. Compact with closure capturing per-buffer state
+          ;; 4. Fire compaction request; resume conversation on completion.
           (let ((resume-buf buf)
                 (resume-requests requests)
                 (resume-round current-round-content))
-            ;; Set compact prompt buffer-locally so it persists through
-            ;; the async operation (a dynamic `let' would unwind before
-            ;; the LLM request is actually sent).
             (setq-local gptel-agent-compact-prompt
                         (gptel-agent-harness--read-compact-prompt))
             (condition-case err
                 (gptel-agent-compact
                  nil
-                 (lambda (&optional _info)
+                 (lambda (&optional info)
                    (when (and resume-requests resume-buf (buffer-live-p resume-buf))
                      (with-current-buffer resume-buf
                        (kill-local-variable 'gptel-agent-compact-prompt)
                        (setq gptel-agent-harness--compacting-p nil)
                        (setq gptel-agent-harness--nudge-count 0)
+                       (when (and info (plist-get info :error))
+                         (when gptel-agent-harness-verbose
+                           (message "gptel-agent-harness: compaction failed, not resuming"))
+                         (cl-return-from gptel-agent-harness--compact nil))
                        (condition-case resume-err
                            (progn
-                             ;; Header at top of compacted summary
+                             ;; Rebuild: header + summary + separator + round + requests
                              (goto-char (point-min))
                              (insert gptel-agent-harness-compact-header)
-                             ;; Re-insert the saved current round
-                             ;; (last assistant response + tool results)
-                             ;; before the separator so it is preserved verbatim
+                             (goto-char (point-max))
+                             (insert gptel-agent-harness-compact-separator)
                              (when resume-round
                                (goto-char (point-max))
                                (insert resume-round))
-                             ;; Visual separator
-                             (goto-char (point-max))
-                             (insert gptel-agent-harness-compact-separator)
-                             ;; Re-insert recent user requests in order
                              (insert (mapconcat #'identity resume-requests "\n\n"))
                              (gptel-send))
                          (error
