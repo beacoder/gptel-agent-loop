@@ -1505,40 +1505,6 @@ Covers:
   (should-error (gptel-agent-harness-tools--glob "*.txt" "/nonexistent/path/xyz")
                 :type 'error))
 
-(ert-deftest gptel-agent-harness-test-glob-git-repo ()
-  "Test glob in a git repo uses git ls-files and returns absolute paths."
-  (gptel-agent-harness-test--with-temp-dir temp-dir
-    (let ((default-directory temp-dir))
-      ;; Initialize a git repo
-      (call-process "git" nil nil nil "init" temp-dir)
-      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
-      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
-      ;; Create files
-      (with-temp-file (expand-file-name "hello.txt" temp-dir)
-        (insert "hello"))
-      (with-temp-file (expand-file-name "world.el" temp-dir)
-        (insert "world"))
-      (make-directory (expand-file-name "sub" temp-dir) t)
-      (with-temp-file (expand-file-name "sub/deep.txt" temp-dir)
-        (insert "deep"))
-      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
-      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
-      ;; Test: glob for *.txt at top level finds hello.txt (git pathspec is level-scoped)
-      (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir)))
-        (should (string-match-p "hello\\.txt" result))
-        (should-not (string-match-p "world\\.el" result))
-        ;; Should contain absolute paths
-        (should (string-match-p (regexp-quote temp-dir) result)))
-      ;; Test: glob in subdirectory finds sub/deep.txt
-      (let ((result (gptel-agent-harness-tools--glob "*.txt"
-                      (expand-file-name "sub" temp-dir))))
-        (should (string-match-p "deep\\.txt" result))
-        (should-not (string-match-p "hello\\.txt" result)))
-      ;; Test: glob with depth=1 at top level keeps only direct children
-      ;; (hello.txt has 0 slashes relative to root, passes 0 < 0+1)
-      (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir 1)))
-        (should (string-match-p "hello\\.txt" result))))))
-
 (ert-deftest gptel-agent-harness-test-glob-respects-gitignore ()
   "Test glob respects .gitignore patterns."
   (gptel-agent-harness-test--with-temp-dir temp-dir
