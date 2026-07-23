@@ -415,6 +415,20 @@ Disable:
 
 # Compaction Configuration
 
+## Manual Compaction
+
+In addition to automatic compaction (triggered when context exceeds the threshold),
+you can manually compact the buffer at any time:
+
+```
+M-x gptel-agent-harness-commands-compact-buffer
+```
+
+This performs the same summarization as automatic compaction — extracting previous
+summaries, sending the buffer to the LLM, and rebuilding with the standard
+header/separator structure — but without interrupting an active request or
+replaying user messages.
+
 ## `gptel-agent-harness-compact-header`
 
 Header inserted at the top of the buffer after compaction.
@@ -727,6 +741,7 @@ long conversation.
   (global-set-key (kbd "C-c g r") #'gptel-agent-harness-commands-review)
   (global-set-key (kbd "C-c g i") #'gptel-agent-harness-commands-initialize)
   (global-set-key (kbd "C-c g u") #'gptel-agent-harness-commands-summary)
+  (global-set-key (kbd "C-c g c") #'gptel-agent-harness-commands-compact-buffer)
   (global-set-key (kbd "C-c g s") #'gptel-agent-harness-restore-session)
   (global-set-key (kbd "C-c g l") #'gptel-agent-harness-restore-latest-session))
 ```
@@ -741,7 +756,7 @@ site-lisp/
 ├── gptel-agent-harness-session.el  # Session: auto-save, title generation, preview, restore
 ├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
-├── gptel-agent-harness-commands.el # Commands (initialize, review, summary)
+├── gptel-agent-harness-commands.el # Commands (initialize, review, summary, compact)
 ├── gptel-agent-harness-test.el     # ERT test suite
 ├── prompts/
 │   ├── compact.txt                 # Context compaction prompt
