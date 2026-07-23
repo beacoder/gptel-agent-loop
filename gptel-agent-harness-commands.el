@@ -91,8 +91,7 @@ to determine if compaction succeeded.
 
 This function does NOT modify the buffer before sending — it sends
 whatever is currently in the buffer as-is.  The caller is responsible
-for preparing the buffer content (e.g., stripping headers, injecting
-<previous-summary> blocks).
+for preparing the buffer content (e.g., stripping headers).
 
 Returns the FSM object for the compaction request."
   (unless (bound-and-true-p gptel-mode)
@@ -124,10 +123,9 @@ Returns the FSM object for the compaction request."
 (defun gptel-agent-harness-commands-compact-buffer ()
   "Manually compact the current gptel buffer.
 
-Extracts any previous compaction summary, prepends it as a
-<previous-summary> block, sends the buffer to the LLM for
-summarization, and rebuilds the buffer with the standard
-header/separator structure.
+Strips the compaction frame (header/separator), sends the buffer
+to the LLM for summarization, and rebuilds the buffer with the
+standard header/separator structure.
 
 Use this when context is getting large and you want to compact
 without waiting for the automatic trigger."
@@ -137,7 +135,7 @@ without waiting for the automatic trigger."
   (when (bound-and-true-p gptel-agent-harness--compacting-p)
     (user-error "Compaction already in progress"))
   (setq-local gptel-agent-harness--compacting-p t)
-  ;; Strip header+summary+separator, prepend old summary as <previous-summary>.
+  ;; Strip header and separator, leaving old summary as plain text.
   (gptel-agent-harness--strip-compact-prefix)
   ;; Set compact prompt and send.
   (setq-local gptel-agent-compact-prompt
