@@ -395,7 +395,12 @@ This is called via `gptel-post-response-functions'."
         (setq gptel-agent-harness--token-calibration new-ratio)
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness: calibration updated — input:%d est:%d ratio:%.2f"
-                   actual-input raw-estimate new-ratio))))))
+                   actual-input raw-estimate new-ratio)))))
+  ;; Clear compacting flag if it was left set after compaction resumed.
+  ;; This is the first response hook that fires after compaction completes,
+  ;; so it's safe to allow future compactions from this point.
+  (when gptel-agent-harness--compacting-p
+    (setq gptel-agent-harness--compacting-p nil)))
 
 (defun gptel-agent-harness--need-compaction-p (fsm)
   "Return non-nil when compaction is needed for FSM.
@@ -463,6 +468,71 @@ Returns nil if no previous response is found."
                 (resp-start (prop-match-beginning props)))
       (buffer-substring resp-start (point-max)))))
 
+
+(defun gptel-agent-harness--strip-compact-prefix ()
+  "Strip the header+summary+separator prefix from current buffer.
+If a previous compaction summary exists, extract it and prepend as a
+<previous-summary> block.  The remaining buffer content is the new
+conversation that needs to be summarized.
+
+Must be called with point in the buffer to compact."
+  (save-excursion
+    (goto-char (point-min))
+    (when (search-forward gptel-agent-harness-compact-header nil t)
+      (let* ((summary-start (point))
+             (separator-pos
+              (save-excursion
+                (when (search-forward
+                       gptel-agent-harness-compact-separator nil t)
+                  (match-end 0))))
+             (summary-end
+              (or (and separator-pos
+                       (save-excursion
+                         (goto-char summary-start)
+                         (when (search-forward
+                                gptel-agent-harness-compact-separator nil t)
+                           (match-beginning 0))))
+                  (point-max)))
+             (old-summary
+              (string-trim
+               (buffer-substring-no-properties summary-start summary-end)))
+             (old-summary
+              (string-trim
+               (replace-regexp-in-string
+                "</?previous-summary>" "" old-summary))))
+        ;; Always remove the header+summary+separator prefix.
+        (let ((new-content-start (or separator-pos (point-max))))
+          (delete-region (point-min) new-content-start)
+          (unless (string-blank-p old-summary)
+            (goto-char (point-min))
+            (insert
+             (format "<previous-summary>\n%s\n</previous-summary>\n\n"
+                     old-summary))))))))
+
+(defun gptel-agent-harness--insert-compact-frame ()
+  "Insert the compact header at buffer start and separator at buffer end.
+Call this after the LLM has written its summary into the buffer."
+  (goto-char (point-min))
+  (insert gptel-agent-harness-compact-header)
+  (goto-char (point-max))
+  (insert gptel-agent-harness-compact-separator))
+
+(defun gptel-agent-harness--buffer-has-new-content-p ()
+  "Return non-nil if buffer has meaningful content beyond <previous-summary>.
+Used as a guard to skip compaction when there's nothing new to merge."
+  (let* ((buf-text (buffer-substring-no-properties (point-min) (point-max)))
+         (non-summary-content
+          (string-trim
+           (if (string-match "<previous-summary>" buf-text)
+               (let ((start (match-beginning 0))
+                     (end (if (string-match "</previous-summary>" buf-text)
+                              (match-end 0)
+                            (length buf-text))))
+                 (concat (substring buf-text 0 start)
+                         (substring buf-text end)))
+             buf-text))))
+    (not (string-blank-p non-summary-content))))
+
 (cl-defun gptel-agent-harness--compact (fsm)
   "Abort and run context compaction for FSM.
 Return non-nil if compaction was initiated, nil otherwise."
@@ -481,7 +551,8 @@ Return non-nil if compaction was initiated, nil otherwise."
         (when gptel-agent-harness-verbose
           (message "gptel-agent-harness: compacting context %.1f%%"
                    (* 100 (gptel-agent-harness--context-ratio-for-fsm fsm))))
-        (let (current-round-content)
+        (let (current-round-content
+              (saved-buffer-text (buffer-substring (point-min) (point-max))))
           ;; Save and remove current round.
           (when-let* ((round (gptel-agent-harness--current-round-content)))
             (setq current-round-content round)
@@ -490,36 +561,16 @@ Return non-nil if compaction was initiated, nil otherwise."
               (when-let* ((props (text-property-search-backward 'gptel 'response t))
                           (resp-start (prop-match-beginning props)))
                 (delete-region resp-start (point-max)))))
-          ;; Preserve previous summary.
-          (save-excursion
-            (goto-char (point-min))
-            (when (search-forward gptel-agent-harness-compact-header nil t)
-              (let* ((summary-start (point))
-                     (summary-end
-                      (or (save-excursion
-                            (when (search-forward
-                                   gptel-agent-harness-compact-separator
-                                   nil t)
-                              (match-beginning 0)))
-                          (point-max)))
-                     (old-summary
-                      (string-trim
-                       (buffer-substring-no-properties
-                        summary-start summary-end)))
-                     (old-summary
-                      (string-trim
-                       (replace-regexp-in-string
-                        "</?previous-summary>"
-                        ""
-                        old-summary))))
-                (unless (string-blank-p old-summary)
-                  ;; Replace entire buffer content with just header + old summary placeholder
-                  (delete-region (point-min) (point-max))
-                  (insert gptel-agent-harness-compact-header)
-                  (insert
-                   (format
-                    "<previous-summary>\n%s\n</previous-summary>\n\n"
-                    old-summary))))))
+          ;; Strip header+summary+separator, prepend old summary as <previous-summary>.
+          (gptel-agent-harness--strip-compact-prefix)
+          ;; Guard: if no meaningful content beyond <previous-summary>, bail out.
+          (unless (gptel-agent-harness--buffer-has-new-content-p)
+            (when gptel-agent-harness-verbose
+              (message "gptel-agent-harness: compact skipped — no new content to merge"))
+            (delete-region (point-min) (point-max))
+            (insert saved-buffer-text)
+            (setq gptel-agent-harness--compacting-p nil)
+            (cl-return-from gptel-agent-harness--compact nil))
           ;; Abort current request.
           (gptel-abort buf)
           (goto-char (point-max))
@@ -530,51 +581,43 @@ Return non-nil if compaction was initiated, nil otherwise."
             (setq-local gptel-agent-compact-prompt
                         (gptel-agent-harness--read-compact-prompt))
             (condition-case err
-                (gptel-agent-compact
-                 nil
+                (gptel-agent-harness-commands-compact
                  (lambda (&optional info)
                    (when (and resume-buf
                               (buffer-live-p resume-buf))
                      (with-current-buffer resume-buf
                        (kill-local-variable 'gptel-agent-compact-prompt)
-                       (setq gptel-agent-harness--compacting-p nil)
                        (setq gptel-agent-harness--nudge-count 0)
                        (if (and info (plist-get info :error))
-                           ;; Async compaction failure.
-                           (when gptel-agent-harness-verbose
-                             (message
-                              "gptel-agent-harness: compaction failed, not resuming"))
-                         ;; Async compaction success.
+                           (progn
+                             (setq gptel-agent-harness--compacting-p nil)
+                             (when gptel-agent-harness-verbose
+                               (message
+                                "gptel-agent-harness: compaction failed, not resuming")))
+                         ;; Success: rebuild buffer.
                          (condition-case resume-err
                              (progn
-                               ;; Rebuild: header + summary + separator + round + requests
-                               (goto-char (point-min))
-                               (insert gptel-agent-harness-compact-header)
-                               (goto-char (point-max))
-                               (insert gptel-agent-harness-compact-separator)
+                               (gptel-agent-harness--insert-compact-frame)
                                (when resume-round
                                  (insert resume-round "\n\n"))
                                (insert
-                                (mapconcat #'identity
-                                           resume-requests
-                                           "\n\n"))
+                                (mapconcat #'identity resume-requests "\n\n"))
+                               ;; Keep compacting-p=t; cleared by calibration hook.
                                (gptel-send))
                            (error
+                            (setq gptel-agent-harness--compacting-p nil)
                             (when gptel-agent-harness-verbose
                               (message
                                "gptel-agent-harness: resume failed — %s"
                                (error-message-string resume-err))))))))))
-              ;; Failure before async request starts.
               (error
                (kill-local-variable 'gptel-agent-compact-prompt)
                (setq gptel-agent-harness--compacting-p nil)
                (when gptel-agent-harness-verbose
                  (message
-                  "gptel-agent-harness: gptel-agent-compact failed — %s"
+                  "gptel-agent-harness: compact failed to start — %s"
                   (error-message-string err)))
-               (cl-return-from
-                   gptel-agent-harness--compact
-                 nil)))))
+               (cl-return-from gptel-agent-harness--compact nil)))))
         ;; Compaction request initiated.
         t))))
 
@@ -628,6 +671,11 @@ NEW-STATE is the optional new state to transition to."
          (when gptel-agent-harness-verbose
            (message "gptel-agent-harness: context ratio error (terminal) — %s"
                     (error-message-string err)))))
+      ;; Clear compacting-p — only for top-level FSMs (not compaction FSMs).
+      (when (gptel-agent-harness--top-level-p machine)
+        (gptel-agent-harness--with-fsm-buffer machine
+          (when gptel-agent-harness--compacting-p
+            (setq gptel-agent-harness--compacting-p nil))))
       (if (and (gptel-agent-harness--agentic-p machine)
                (gptel-agent-harness--top-level-p machine)
                (gptel-agent-harness--can-nudge-p machine))
@@ -639,7 +687,12 @@ NEW-STATE is the optional new state to transition to."
      ((and (memq target '(TOOL TPRE))
            (gptel-agent-harness--top-level-p machine))
       (funcall orig-fn machine new-state)
-      (gptel-agent-harness--reset-nudges machine))
+      (gptel-agent-harness--reset-nudges machine)
+      ;; Clear compacting-p as safety valve — if we're executing tools,
+      ;; the resumed request is progressing and compaction can be re-enabled.
+      (gptel-agent-harness--with-fsm-buffer machine
+        (when gptel-agent-harness--compacting-p
+          (setq gptel-agent-harness--compacting-p nil))))
      ;; Everything else
      (t (funcall orig-fn machine new-state)))))
 
