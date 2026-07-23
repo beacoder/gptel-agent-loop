@@ -31,6 +31,131 @@
 (require 'gptel-agent-harness-session)
 (require 'project)
 
+;;;; Context Compaction
+
+(defun gptel-agent-harness-commands--compact-callback (resp info)
+  "Callback for `gptel-agent-harness-commands-compact'.
+
+Handles the LLM response RESP.  On success (RESP is a string),
+erases the buffer and inserts the compacted summary.  On failure,
+reports the error.  INFO is the request info plist."
+  (let ((buf (plist-get info :buffer)))
+    (cond
+     ((not (buffer-live-p buf))
+      (user-error "Session buffer \"%s\" is no longer available"
+                  (buffer-name buf)))
+     ;; API error — resp is nil
+     ((null resp)
+      (with-current-buffer buf
+        (gptel--update-status
+         (format " Error: %s" (plist-get info :status)) 'error))
+      (message "Compaction failed: %S" (plist-get info :status)))
+     ;; Success — resp is a string
+     ((stringp resp)
+      (with-current-buffer buf
+        ;; Erase all buffer content and insert the compacted summary
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert resp)
+          (unless (eq (char-before) ?\n) (insert "\n")))
+        (gptel--update-status " Ready" 'success)))
+     ;; Reasoning block — ignore, wait for text
+     ((and (consp resp) (eq (car resp) 'reasoning)) nil)
+     ;; Abort
+     ((eq resp 'abort)
+      (with-current-buffer buf
+        (plist-put info :error "Compaction aborted")
+        (gptel--update-status " Aborted" 'error))
+      (message "Compaction aborted"))
+     ;; Anything else (e.g., tool call) — treat as error
+     (t
+      (with-current-buffer buf
+        (plist-put info :error "Compaction failed: unexpected response type")
+        (gptel--update-status " Error: Compaction failed" 'error))
+      (message "Compaction failed: unexpected response type %S" (type-of resp))))))
+
+(declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
+(declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness")
+(declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness")
+
+(defun gptel-agent-harness-commands-compact (&optional post-func)
+  "Compact the current buffer contents using the LLM.
+
+Sends the entire buffer content as a user message to the LLM with the
+compact system prompt.  On success, erases the buffer and replaces it
+with the compacted summary.
+
+POST-FUNC, if provided, is called with the INFO plist after the
+compaction completes (success or failure).  Check (plist-get info :error)
+to determine if compaction succeeded.
+
+This function does NOT modify the buffer before sending — it sends
+whatever is currently in the buffer as-is.  The caller is responsible
+for preparing the buffer content (e.g., stripping headers, injecting
+<previous-summary> blocks).
+
+Returns the FSM object for the compaction request."
+  (unless (bound-and-true-p gptel-mode)
+    (user-error "Not in a gptel buffer"))
+  (gptel--update-status " Compacting..." 'warning)
+  (let* ((compact-prompt (or (and (local-variable-p 'gptel-agent-compact-prompt)
+                                  gptel-agent-compact-prompt)
+                             (gptel-agent-harness--read-compact-prompt)))
+         ;; Disable tools and reasoning for the compaction request
+         (gptel-include-reasoning nil)
+         (gptel-use-tools nil)
+         (gptel-org-branching-context nil)
+         (gptel-stream nil)
+         ;; Send entire buffer content as the prompt
+         (content (buffer-substring-no-properties (point-min) (point-max)))
+         (fsm (gptel-request content
+                :system compact-prompt
+                :buffer (current-buffer)
+                :position (point-max-marker)
+                :transforms nil
+                :callback #'gptel-agent-harness-commands--compact-callback)))
+    (when (functionp post-func)
+      (let ((info (gptel-fsm-info fsm)))
+        (plist-put info :post (cons post-func (plist-get info :post)))))
+    fsm))
+
+
+;;;###autoload
+(defun gptel-agent-harness-commands-compact-buffer ()
+  "Manually compact the current gptel buffer.
+
+Extracts any previous compaction summary, prepends it as a
+<previous-summary> block, sends the buffer to the LLM for
+summarization, and rebuilds the buffer with the standard
+header/separator structure.
+
+Use this when context is getting large and you want to compact
+without waiting for the automatic trigger."
+  (interactive)
+  (unless (bound-and-true-p gptel-mode)
+    (user-error "Not in a gptel buffer"))
+  (when (bound-and-true-p gptel-agent-harness--compacting-p)
+    (user-error "Compaction already in progress"))
+  (setq-local gptel-agent-harness--compacting-p t)
+  ;; Strip header+summary+separator, prepend old summary as <previous-summary>.
+  (gptel-agent-harness--strip-compact-prefix)
+  ;; Set compact prompt and send.
+  (setq-local gptel-agent-compact-prompt
+              (gptel-agent-harness--read-compact-prompt))
+  (let ((buf (current-buffer)))
+    (gptel-agent-harness-commands-compact
+     (lambda (&optional info)
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (kill-local-variable 'gptel-agent-compact-prompt)
+           (setq gptel-agent-harness--compacting-p nil)
+           (if (and info (plist-get info :error))
+               (message "Manual compaction failed: %s"
+                        (plist-get info :error))
+             ;; Success: add header + separator.
+             (gptel-agent-harness--insert-compact-frame)
+             (message "Buffer compacted successfully."))))))))
+
 (defconst gptel-agent-harness-commands--initialize-prompt-file
   (expand-file-name
    "prompts/initialize.txt"
