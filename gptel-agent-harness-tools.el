@@ -186,6 +186,7 @@ this tool cannot be used")))))
                                "--no-color"
                                (and (natnump context-lines)
                                     (format "-C%d" context-lines))
+                               "--max-count=1000"
                                "--untracked"
                                "-P" "-e" regex
                                "--")
