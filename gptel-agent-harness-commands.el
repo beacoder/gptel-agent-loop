@@ -103,7 +103,6 @@ Returns the FSM object for the compaction request."
          ;; Disable tools and reasoning for the compaction request
          (gptel-include-reasoning nil)
          (gptel-use-tools nil)
-         (gptel-org-branching-context nil)
          (gptel-stream nil)
          ;; Send entire buffer content as the prompt
          (content (buffer-substring-no-properties (point-min) (point-max)))
