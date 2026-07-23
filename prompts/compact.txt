@@ -24,6 +24,5 @@ Prefer terse bullets over paragraphs.
 
 Do not answer the conversation itself.
 Do not mention summarizing, compacting, or merging context.
-Do not include <previous-summary> or </previous-summary> tags in your output.
 
 Respond in the same language as the conversation.
