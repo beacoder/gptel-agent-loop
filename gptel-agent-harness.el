@@ -422,15 +422,6 @@ Helps distinguish the summary from original conversation text."
   :type 'string
   :group 'gptel-agent-harness)
 
-(defcustom gptel-agent-harness-compact-cooldown-turns 3
-  "Number of LLM turns to skip before allowing another compaction.
-After automatic compaction completes and resumes, the context ratio
-may still be high due to the summary + resumed content.  This prevents
-immediate re-triggering by requiring the conversation to progress for
-at least this many turns."
-  :type 'integer
-  :group 'gptel-agent-harness)
-
 (defun gptel-agent-harness--last-user-request (fsm)
   "Return the last user message from FSM, excluding nudge messages.
 Returns the content string, or nil if none found."
