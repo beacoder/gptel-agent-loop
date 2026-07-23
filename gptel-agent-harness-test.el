@@ -1363,5 +1363,489 @@ Covers:
     (should-error (gptel-agent-harness-commands-compact)
                   :type 'user-error)))
 
+;;;; Title From Filename Tests
+
+(ert-deftest gptel-agent-harness-test-title-from-filename ()
+  "Test `--title-from-filename' extracts title from session file names."
+  ;; Normal titled file
+  (should (equal (gptel-agent-harness--title-from-filename
+                  "/path/to/Fix-auth-bug_260723102000.md")
+                 "Fix auth bug"))
+  ;; Multi-word title with hyphens
+  (should (equal (gptel-agent-harness--title-from-filename
+                  "Debugging-500-errors_260101120000.md")
+                 "Debugging 500 errors"))
+  ;; Single word (project name only) → nil
+  (should-not (gptel-agent-harness--title-from-filename
+               "project_260723102000.md"))
+  ;; No timestamp suffix → nil
+  (should-not (gptel-agent-harness--title-from-filename
+               "no-timestamp.md"))
+  ;; Short timestamp (not 12 digits) → nil
+  (should-not (gptel-agent-harness--title-from-filename
+               "title_12345.md")))
+
+;;;; Strip Compact Prefix / Insert Compact Frame (Isolated)
+
+(ert-deftest gptel-agent-harness-test-strip-compact-prefix ()
+  "Test `--strip-compact-prefix' removes header and separator."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-compact-separator "\n\n---\n\n"))
+    ;; With header + separator present
+    (with-temp-buffer
+      (insert "**[Compacted Summary]**\n\nOld summary text.\n\n---\n\nNew conversation.")
+      (gptel-agent-harness--strip-compact-prefix)
+      (should (equal (buffer-string) "Old summary text.\n\nNew conversation.")))
+    ;; Without header → no-op
+    (with-temp-buffer
+      (insert "Plain content with no frame.")
+      (gptel-agent-harness--strip-compact-prefix)
+      (should (equal (buffer-string) "Plain content with no frame.")))
+    ;; Header without separator → only header removed
+    (with-temp-buffer
+      (insert "**[Compacted Summary]**\n\nSummary without separator.")
+      (gptel-agent-harness--strip-compact-prefix)
+      (should (equal (buffer-string) "Summary without separator.")))))
+
+(ert-deftest gptel-agent-harness-test-insert-compact-frame ()
+  "Test `--insert-compact-frame' adds header at start and separator at end."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-compact-separator "\n\n---\n\n"))
+    (with-temp-buffer
+      (insert "The summary content.")
+      (gptel-agent-harness--insert-compact-frame)
+      (should (equal (buffer-string)
+                     "**[Compacted Summary]**\n\nThe summary content.\n\n---\n\n")))))
+
+;;;; Update Context Ratio Tests
+
+(ert-deftest gptel-agent-harness-test-update-context-ratio ()
+  "Test `--update-context-ratio' computes and stores ratio + raw estimate."
+  (let ((gptel-agent-harness-verbose nil)
+        (gptel-model "unknown-model"))  ; 32768 fallback
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--token-calibration 1.0)
+        (setq-local gptel-agent-harness--context-ratio nil)
+        (setq-local gptel-agent-harness--last-raw-estimate nil))
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :handlers gptel-send--handlers
+                   :tools (vector (list :type "function"))
+                   :system (make-string 4000 ?a)
+                   :messages (vector (list :role "user" :content "hello")))))
+        (gptel-agent-harness--update-context-ratio fsm)
+        (with-current-buffer buf
+          ;; Ratio should be computed
+          (should (numberp gptel-agent-harness--context-ratio))
+          (should (> gptel-agent-harness--context-ratio 0))
+          ;; Raw estimate should be stored
+          (should (numberp gptel-agent-harness--last-raw-estimate))
+          (should (> gptel-agent-harness--last-raw-estimate 0)))))))
+
+(ert-deftest gptel-agent-harness-test-update-context-ratio-skips-non-top-level ()
+  "Test `--update-context-ratio' is a no-op for non-top-level FSMs."
+  (let ((gptel-agent-harness-verbose nil)
+        (gptel-model "unknown-model"))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--context-ratio nil)
+        (setq-local gptel-agent-harness--last-raw-estimate nil))
+      (let ((fsm (gptel-agent-harness-test--make-fsm buf
+                   :handlers 'sub-agent-handlers
+                   :system "sys"
+                   :messages (vector (list :role "user" :content "hi")))))
+        (gptel-agent-harness--update-context-ratio fsm)
+        (with-current-buffer buf
+          (should-not gptel-agent-harness--context-ratio)
+          (should-not gptel-agent-harness--last-raw-estimate))))))
+
+(ert-deftest gptel-agent-harness-test-update-context-ratio-skips-buffer-data ()
+  "Test `--update-context-ratio' is a no-op when :data is a buffer."
+  (let ((gptel-agent-harness-verbose nil))
+    (gptel-agent-harness-test--with-buffer buf
+      (with-current-buffer buf
+        (setq-local gptel-agent-harness--context-ratio nil))
+      ;; Simulate the case where :data is still a buffer (during assembly)
+      (let ((fsm (gptel-make-fsm
+                  :info (list :buffer buf :data buf)
+                  :handlers gptel-send--handlers)))
+        (gptel-agent-harness--update-context-ratio fsm)
+        (with-current-buffer buf
+          (should-not gptel-agent-harness--context-ratio))))))
+
+;;;; With-FSM-Buffer Dead Buffer Tests
+
+(ert-deftest gptel-agent-harness-test-with-fsm-buffer-dead ()
+  "Test `--with-fsm-buffer' returns nil when buffer is killed."
+  (let* ((buf (generate-new-buffer " *dead-test*"))
+         (fsm (gptel-agent-harness-test--make-fsm buf
+                :system "sys" :messages (vector))))
+    (kill-buffer buf)
+    ;; Should return nil without error
+    (should-not (gptel-agent-harness--with-fsm-buffer fsm
+                  (error "Should not execute")))))
+
+(ert-deftest gptel-agent-harness-test-with-fsm-buffer-nil ()
+  "Test `--with-fsm-buffer' returns nil when buffer is nil."
+  (let ((fsm (gptel-make-fsm
+              :info (list :buffer nil :data nil)
+              :handlers 'test)))
+    (should-not (gptel-agent-harness--with-fsm-buffer fsm
+                  (error "Should not execute")))))
+
+;;;; Glob Tool Tests
+
+(ert-deftest gptel-agent-harness-test-glob-empty-pattern-errors ()
+  "Test glob with empty pattern signals an error."
+  (should-error (gptel-agent-harness-tools--glob "")
+                :type 'error))
+
+(ert-deftest gptel-agent-harness-test-glob-nonexistent-path-errors ()
+  "Test glob with non-readable path signals an error."
+  (should-error (gptel-agent-harness-tools--glob "*.txt" "/nonexistent/path/xyz")
+                :type 'error))
+
+(ert-deftest gptel-agent-harness-test-glob-git-repo ()
+  "Test glob in a git repo uses git ls-files and returns absolute paths."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      ;; Initialize a git repo
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      ;; Create files
+      (with-temp-file (expand-file-name "hello.txt" temp-dir)
+        (insert "hello"))
+      (with-temp-file (expand-file-name "world.el" temp-dir)
+        (insert "world"))
+      (make-directory (expand-file-name "sub" temp-dir) t)
+      (with-temp-file (expand-file-name "sub/deep.txt" temp-dir)
+        (insert "deep"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Test: glob for *.txt at top level finds hello.txt (git pathspec is level-scoped)
+      (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir)))
+        (should (string-match-p "hello\\.txt" result))
+        (should-not (string-match-p "world\\.el" result))
+        ;; Should contain absolute paths
+        (should (string-match-p (regexp-quote temp-dir) result)))
+      ;; Test: glob in subdirectory finds sub/deep.txt
+      (let ((result (gptel-agent-harness-tools--glob "*.txt"
+                      (expand-file-name "sub" temp-dir))))
+        (should (string-match-p "deep\\.txt" result))
+        (should-not (string-match-p "hello\\.txt" result)))
+      ;; Test: glob with depth=1 at top level keeps only direct children
+      ;; (hello.txt has 0 slashes relative to root, passes 0 < 0+1)
+      (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir 1)))
+        (should (string-match-p "hello\\.txt" result))))))
+
+(ert-deftest gptel-agent-harness-test-glob-respects-gitignore ()
+  "Test glob respects .gitignore patterns."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name ".gitignore" temp-dir)
+        (insert "ignored.txt\n"))
+      (with-temp-file (expand-file-name "tracked.txt" temp-dir)
+        (insert "tracked"))
+      (with-temp-file (expand-file-name "ignored.txt" temp-dir)
+        (insert "ignored"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      (let ((result (gptel-agent-harness-tools--glob "*.txt" temp-dir)))
+        (should (string-match-p "tracked\\.txt" result))
+        (should-not (string-match-p "ignored\\.txt" result))))))
+
+;;;; Grep Tool Tests
+
+(ert-deftest gptel-agent-harness-test-grep-nonexistent-path-errors ()
+  "Test grep with non-readable path signals an error."
+  (should-error (gptel-agent-harness-tools--grep "pattern" "/nonexistent/xyz")
+                :type 'error))
+
+(ert-deftest gptel-agent-harness-test-grep-in-git-repo ()
+  "Test grep finds matches using git-grep in a git repo."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name "foo.txt" temp-dir)
+        (insert "line one\nfoo bar baz\nline three\n"))
+      (with-temp-file (expand-file-name "bar.txt" temp-dir)
+        (insert "nothing here\n"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Search for "foo" in the whole directory
+      (let ((result (gptel-agent-harness-tools--grep "foo" temp-dir)))
+        (should (string-match-p "foo bar baz" result))
+        (should-not (string-match-p "nothing here" result)))
+      ;; Search in a specific file
+      (let ((result (gptel-agent-harness-tools--grep
+                     "line" (expand-file-name "foo.txt" temp-dir))))
+        (should (string-match-p "line one" result))
+        (should (string-match-p "line three" result))))))
+
+(ert-deftest gptel-agent-harness-test-grep-with-glob-filter ()
+  "Test grep respects the glob filter parameter."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name "match.el" temp-dir)
+        (insert "target-pattern-here\n"))
+      (with-temp-file (expand-file-name "match.txt" temp-dir)
+        (insert "target-pattern-here\n"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Search with glob restricting to .el files only
+      (let ((result (gptel-agent-harness-tools--grep
+                     "target-pattern" temp-dir "*.el")))
+        (should (string-match-p "match\\.el" result))
+        (should-not (string-match-p "match\\.txt" result))))))
+
+(ert-deftest gptel-agent-harness-test-grep-dash-pattern ()
+  "Test grep handles patterns starting with a dash via -e flag."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((default-directory temp-dir))
+      (call-process "git" nil nil nil "init" temp-dir)
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.email" "test@test.com")
+      (call-process "git" nil nil nil "-C" temp-dir "config" "user.name" "Test")
+      (with-temp-file (expand-file-name "test.txt" temp-dir)
+        (insert "normal line\n--flag-like-pattern\nanother line\n"))
+      (call-process "git" nil nil nil "-C" temp-dir "add" ".")
+      (call-process "git" nil nil nil "-C" temp-dir "commit" "-m" "init")
+      ;; Pattern starting with dash should not be misinterpreted as a flag
+      (let ((result (gptel-agent-harness-tools--grep
+                     "--flag-like" (expand-file-name "test.txt" temp-dir))))
+        (should (string-match-p "flag-like-pattern" result))))))
+
+;;;; Compact Buffer Command Tests
+
+(ert-deftest gptel-agent-harness-test-compact-buffer-requires-gptel-mode ()
+  "Test compact-buffer errors when not in gptel buffer."
+  (with-temp-buffer
+    (setq-local gptel-mode nil)
+    (should-error (gptel-agent-harness-commands-compact-buffer)
+                  :type 'user-error)))
+
+(ert-deftest gptel-agent-harness-test-compact-buffer-errors-when-already-compacting ()
+  "Test compact-buffer errors when compaction is already in progress."
+  (with-temp-buffer
+    (setq-local gptel-mode t)
+    (setq-local gptel-agent-harness--compacting-p t)
+    (should-error (gptel-agent-harness-commands-compact-buffer)
+                  :type 'user-error)))
+
+(ert-deftest gptel-agent-harness-test-compact-buffer-success-flow ()
+  "Test compact-buffer sets compacting-p, strips prefix, calls compact, inserts frame."
+  (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
+        (gptel-agent-harness-compact-separator "\n\n---\n\n")
+        (prompt-file (make-temp-file "compact-" nil ".txt" "compact prompt")))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file prompt-file))
+          (gptel-agent-harness-test--with-buffer buf
+            (with-current-buffer buf
+              (setq-local gptel-mode t)
+              (setq-local gptel-agent-harness--compacting-p nil)
+              (insert "**[Compacted Summary]**\n\nOld summary.\n\n---\n\nConversation text.")
+              (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                         (lambda (callback)
+                           ;; Simulate successful compaction
+                           (erase-buffer)
+                           (insert "New summary.\n")
+                           (when (functionp callback)
+                             (funcall callback nil)))))
+                (gptel-agent-harness-commands-compact-buffer)
+                ;; After success: frame inserted, compacting cleared
+                (should-not gptel-agent-harness--compacting-p)
+                (should (string-match-p "\\`\\*\\*\\[Compacted Summary\\]\\*\\*"
+                                        (buffer-string)))
+                (should (string-match-p "New summary" (buffer-string)))
+                (should (string-match-p "\n\n---\n\n" (buffer-string)))))))
+      (delete-file prompt-file))))
+
+;;;; Initialize Command Tests
+
+(ert-deftest gptel-agent-harness-test-initialize-invalid-dir ()
+  "Test initialize errors with invalid project directory."
+  (should-error (gptel-agent-harness-commands-initialize "/nonexistent/xyz")
+                :type 'user-error))
+
+(ert-deftest gptel-agent-harness-test-initialize-creates-buffer ()
+  "Test initialize creates a buffer with correct setup."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let* ((temp-file (make-temp-file "init-" nil ".txt"
+                                      "Initialize ${path}. $ARGUMENTS"))
+           (gptel-agent-harness-commands--initialize-prompt-file temp-file)
+           (gptel-send-called nil))
+      (unwind-protect
+          (cl-letf (((symbol-function 'gptel-get-tool)
+                     (lambda (name) (intern (format "tool-%s" name))))
+                    ((symbol-function 'gptel-agent-update) #'ignore)
+                    ((symbol-function 'gptel-send)
+                     (lambda () (setq gptel-send-called t)))
+                    ((symbol-function 'gptel--update-status)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'gptel)
+                     (lambda (buf-name &optional _prompt _initial _interactive)
+                       (get-buffer-create buf-name))))
+            (let ((buf (gptel-agent-harness-commands-initialize temp-dir "extra-arg")))
+              (should (buffer-live-p buf))
+              (should (string-match-p "gptel-agent-init" (buffer-name buf)))
+              (with-current-buffer buf
+                (should gptel-use-tools)
+                (should (listp gptel-tools))
+                (should (equal default-directory temp-dir))
+                (should (equal gptel-agent-harness--project-dir temp-dir))
+                (should gptel-send-called)
+                ;; Buffer should contain the analysis request
+                (should (string-match-p "Analyze the repository" (buffer-string))))
+              (kill-buffer buf)))
+        (delete-file temp-file)))))
+
+;;;; Generate Session Title Guard Tests
+
+(ert-deftest gptel-agent-harness-test-generate-title-guards ()
+  "Test `--generate-session-title' early returns without making LLM call."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-mode t)
+      ;; Guard 1: no session file cache → no call
+      (setq-local gptel-agent-harness--session-file-cache nil)
+      (setq-local gptel-agent-harness--session-title nil)
+      (setq-local gptel-agent-harness--session-title-pending nil)
+      (let ((request-called nil))
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (&rest _) (setq request-called t))))
+          (gptel-agent-harness--generate-session-title)
+          (should-not request-called)))
+      ;; Guard 2: title already set → no call
+      (setq-local gptel-agent-harness--session-file-cache "/tmp/test.md")
+      (setq-local gptel-agent-harness--session-title "Existing Title")
+      (let ((request-called nil))
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (&rest _) (setq request-called t))))
+          (gptel-agent-harness--generate-session-title)
+          (should-not request-called)))
+      ;; Guard 3: pending → no call
+      (setq-local gptel-agent-harness--session-title nil)
+      (setq-local gptel-agent-harness--session-title-pending t)
+      (let ((request-called nil))
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (&rest _) (setq request-called t))))
+          (gptel-agent-harness--generate-session-title)
+          (should-not request-called)))
+      ;; Guard 4: no user message in buffer → no call
+      (setq-local gptel-agent-harness--session-title-pending nil)
+      ;; Buffer is empty, no gptel 'response text property → no first-msg
+      (let ((request-called nil))
+        (cl-letf (((symbol-function 'gptel-request)
+                   (lambda (&rest _) (setq request-called t))))
+          (gptel-agent-harness--generate-session-title)
+          (should-not request-called))))))
+
+;;;; Session Restore Tool Names Path
+
+(ert-deftest gptel-agent-harness-test-restore-session-tool-names ()
+  "Test session restore uses `gptel--tool-names' when no preset is available."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((gptel-agent-harness-session-dir temp-dir)
+          (session-file (expand-file-name "test_260723100000.md" temp-dir)))
+      ;; Write a session file with tool names but no preset
+      (with-temp-file session-file
+        (insert "Session content.\n")
+        (insert "\n;; Local Variables:\n")
+        (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
+        (insert ";; gptel-model: \"gpt-5-mini\"\n")
+        (insert ";; gptel--backend-name: \"test-be\"\n")
+        (insert ";; gptel--tool-names: (\"Glob\" \"Grep\" \"Read\")\n")
+        (insert ";; End:\n"))
+      (cl-letf (((symbol-function 'gptel-agent-update) #'ignore)
+                ((symbol-function 'gptel-mode)
+                 (lambda (&optional arg)
+                   (setq-local gptel-mode (if (null arg) t (if (eq arg -1) nil t)))))
+                ((symbol-function 'gptel--restore-props) #'ignore)
+                ((symbol-function 'gptel-get-tool)
+                 (lambda (name) (list :name name :function #'ignore)))
+                ((symbol-function 'gptel-get-preset) (lambda (_) nil)))
+        (gptel-agent-harness-restore-session session-file)
+        ;; Tools should be restored from gptel--tool-names
+        (should gptel-use-tools)
+        (should (= (length gptel-tools) 3))
+        (kill-buffer (current-buffer))))))
+
+;;;; Read Compact Prompt Tests
+
+(ert-deftest gptel-agent-harness-test-read-compact-prompt ()
+  "Test `--read-compact-prompt' reads file content or errors."
+  (let ((temp-file (make-temp-file "compact-" nil ".txt" "compact instructions")))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file temp-file))
+          (should (equal (gptel-agent-harness--read-compact-prompt)
+                         "compact instructions")))
+      (delete-file temp-file)))
+  ;; Missing file → error
+  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
+    (should-error (gptel-agent-harness--read-compact-prompt))))
+
+;;;; Preview Session Tests
+
+(ert-deftest gptel-agent-harness-test-preview-session ()
+  "Test `--preview-session' creates a preview buffer with metadata."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((session-file (expand-file-name "test_260723100000.md" temp-dir)))
+      (with-temp-file session-file
+        (insert "User: hello\nAssistant: hi\n")
+        (insert "\n;; Local Variables:\n")
+        (insert ";; gptel-model: \"gpt-5\"\n")
+        (insert ";; gptel-agent-harness--project-dir: \"/tmp/proj\"\n")
+        (insert ";; End:\n"))
+      (unwind-protect
+          (progn
+            (gptel-agent-harness--preview-session session-file)
+            (let ((preview-buf (get-buffer "*gptel-session-preview*")))
+              (should preview-buf)
+              (with-current-buffer preview-buf
+                (should (string-match-p "Session Preview" (buffer-string)))
+                (should (string-match-p "gpt-5" (buffer-string)))
+                (should (string-match-p "/tmp/proj" (buffer-string)))
+                (should (string-match-p "User: hello" (buffer-string)))
+                ;; Local vars block should be removed from preview
+                (should-not (string-match-p ";; Local Variables:" (buffer-string))))))
+        (gptel-agent-harness--dismiss-preview)))))
+
+(ert-deftest gptel-agent-harness-test-preview-session-truncation ()
+  "Test `--preview-session' truncates long files."
+  (gptel-agent-harness-test--with-temp-dir temp-dir
+    (let ((gptel-agent-harness-preview-lines 5)
+          (session-file (expand-file-name "long_260723100000.md" temp-dir)))
+      (with-temp-file session-file
+        (dotimes (i 100)
+          (insert (format "Line %d of conversation\n" i))))
+      (unwind-protect
+          (progn
+            (gptel-agent-harness--preview-session session-file)
+            (let ((preview-buf (get-buffer "*gptel-session-preview*")))
+              (should preview-buf)
+              (with-current-buffer preview-buf
+                (should (string-match-p "truncated" (buffer-string)))
+                ;; Should not contain all 100 lines
+                (should-not (string-match-p "Line 99" (buffer-string))))))
+        (gptel-agent-harness--dismiss-preview)))))
+
+(ert-deftest gptel-agent-harness-test-dismiss-preview ()
+  "Test `--dismiss-preview' kills the preview buffer."
+  ;; No preview buffer → no error
+  (gptel-agent-harness--dismiss-preview)
+  ;; Create and dismiss
+  (get-buffer-create "*gptel-session-preview*")
+  (should (get-buffer "*gptel-session-preview*"))
+  (gptel-agent-harness--dismiss-preview)
+  (should-not (get-buffer "*gptel-session-preview*")))
+
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
