@@ -1,724 +1,24 @@
 # gptel-agent-harness
 
-`gptel-agent-harness` is an extension to the excellent `gptel-agent`，it improves `gptel-agent` by providing:
+An extension to `gptel-agent` that makes it behave like a reliable coding agent (similar to OpenCode). It adds completion supervision, context management, session persistence, enhanced tools, and a custom agent definition.
 
-1. **Completion supervision**
+## Features
 
-   * Prevents agents from stopping prematurely.
-   * Intercepts terminal FSM transitions (`DONE` / `ERRS`).
-   * Asks the model to verify completion before allowing termination.
-   * Resets the stop guard when real progress happens through tool calls.
-
-2. **Context supervision**
-
-   * Monitors estimated context usage before LLM requests.
-   * Automatically triggers context compaction when the context window exceeds a configurable threshold.
-   * Supports model-specific context window sizes.
-   * Self-calibrates token estimation using actual API-reported input token counts.
-   * Displays context usage ratio in mode-line.
-
-3. **Session management**
-
-   * Auto-saves gptel agent buffers after each LLM response.
-   * Stores full session state (model, backend, system prompt, tools, parameters).
-   * Generates meaningful session titles via LLM after first response.
-   * Restore any session with `gptel-agent-harness-restore-session` or the most recent one with `gptel-agent-harness-restore-latest-session`.
-   * Live preview during session selection.
-
-4. **Improved tools**
-
-   * Enhanced `glob` tool using `git ls-files` for fast, `.gitignore`-aware file listing in git repos, falling back to `tree`.
-   * Enhanced `grep` tool using `git grep -e` for robust regex handling, with automatic fallback to `ripgrep` or `grep`.
-   * `Question` tool that allows the LLM to ask the user questions during execution via `completing-read`, supporting single/multi-select and free-text input.
-
-5. **Custom agent definition**
-
-   * Provides `gptel-opencode-agent` with OpenCode similar behavior and capabilities.
-   * Uses agent definitions from `gptel-agent-harness-agent-dirs`.
-
-6. **Project initialization, Code review & Conversation summary**
-
-   * `gptel-agent-harness-commands-initialize` creates/updates `AGENTS.md` for a project via a dedicated LLM session.
-   * `gptel-agent-harness-commands-review` performs code review of uncommitted changes, specific commits, branches, or PRs.
-   * `gptel-agent-harness-commands-summary` summarizes the current gptel buffer conversation in PR-description style.
-   * Uses prompts from `prompts/initialize.txt`, `prompts/review.txt`, and `prompts/summary.txt`.
-
-The goal is to make gptel-agent behave more like a reliable coding agent, such as OpenCode.
-
----
+- **Completion supervision** — Prevents agents from stopping prematurely by injecting verification nudges before allowing terminal states. Resets on tool progress.
+- **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts, displays ratio in mode-line.
+- **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
+- **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
+- **Custom agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
+- **Commands** — Project initialization, code review, conversation summary, and manual compaction.
 
 ## Installation
-
-Install through Emacs package manager:
-
-```elisp
-(package-install 'gptel-agent-harness)
-```
-
-Or with `straight.el`:
-
-```elisp
-(straight-use-package 'gptel-agent-harness)
-```
-
-Enable the mode:
 
 ```elisp
 (require 'gptel-agent-harness)
 (gptel-agent-harness-mode 1)
 ```
 
-The mode is global and installs advice around gptel's FSM transition and request functions.
-
----
-
-# Features
-
-# Completion Supervision
-
-### Problem
-
-LLM agents often stop when they believe a task is finished, even when:
-
-* files were not verified,
-* tests were not executed,
-* requested changes are incomplete,
-* tool calls are still needed.
-
-`gptel-agent-harness` adds a lightweight completion guard.
-
-### Workflow
-
-```
-LLM finishes response
-        |
-        v
-gptel FSM enters DONE / ERRS
-        |
-        v
-completion check
-        |
-        +---- incomplete
-        |
-        v
-inject verification prompt
-        |
-        v
-continue agent execution
-```
-
-The harness only applies this logic when:
-
-* the session is a top-level user agent session,
-* tools are enabled,
-* nudge attempts remain.
-
-Sub-agent FSMs are not modified.
-
----
-
-## Nudge Mechanism
-
-When the agent attempts to stop, the harness injects:
-
-```text
-Review the original user request and the Task Completion Rules in the context. Verify whether all completion criteria are satisfied. If not, continue by making tool calls. Do not stop until the rules are fully met.
-```
-
-The agent receives another chance to:
-
-* inspect files,
-* run commands,
-* verify results,
-* continue using tools.
-
----
-
-## Configuration
-
-## `gptel-agent-harness-max-nudges`
-
-Maximum consecutive completion checks.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-max-nudges 2)
-```
-
-Example:
-
-```elisp
-(setq gptel-agent-harness-max-nudges 3)
-```
-
-The counter resets whenever the agent performs tool calls:
-
-```
-tool execution
-      |
-      v
-reset nudge counter
-```
-
-This prevents unnecessary blocking after genuine progress.
-
----
-
-## `gptel-agent-harness-nudge-message`
-
-Message injected when the agent tries to stop.
-
-Example:
-
-```elisp
-(setq gptel-agent-harness-nudge-message
-      "Review your previous response against the user's requirements. If anything remains incomplete, continue working with tools. Only stop when the task is fully verified.")
-```
-
----
-
-## `gptel-agent-harness-verbose`
-
-Enable logging.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-verbose nil)
-```
-
-Enable:
-
-```elisp
-(setq gptel-agent-harness-verbose t)
-```
-
-Example output:
-
-```
-gptel-agent-harness: completion nudge 1/2 — asking LLM to review task
-```
-
----
-
-# Context Supervision
-
-Long-running coding agents can exceed the model context window.
-
-`gptel-agent-harness` checks context size before every LLM request.
-
-Workflow:
-
-```
-before LLM request
-        |
-        v
-estimate context tokens
-        |
-        v
-usage > threshold?
-        |
-        +---- yes
-        |
-        v
-run compaction
-        |
-        v
-send request
-```
-
----
-
-## Context Threshold
-
-### `gptel-agent-harness-context-trigger`
-
-Context usage ratio that triggers compaction.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-context-trigger 0.70)
-```
-
-Example:
-
-```elisp
-(setq gptel-agent-harness-context-trigger 0.80)
-```
-
-With the default value, compaction starts when estimated usage exceeds 70% of the model context window.
-
----
-
-## Supported Context Windows
-
-Default model table:
-
-```elisp
-(setq gptel-agent-harness-context-windows
-      '(("gpt-5-mini" . 128000)
-        ("gpt-5" . 400000)
-        ("claude" . 200000)
-        ("deepseek-v3" . 128000)
-        ("deepseek-v4" . 1000000)
-        ("qwen3.5" . 131072)
-        ("qwen3" . 131072)
-        ("glm-5.2" . 1000000)
-        ("glm-5.1" . 128000)
-        ("kimi-k2.7" . 256000)
-        ("kimi" . 128000)))
-```
-
-Unknown models use a safe fallback:
-
-```text
-32768 tokens
-```
-
-You can extend the table:
-
-```elisp
-(add-to-list
- 'gptel-agent-harness-context-windows
- '("my-model" . 200000))
-```
-
----
-
-## Compaction Prompt
-
-Read from `prompts/compact.txt`, copied from OpenCode's compaction prompt. It preserves:
-
-* file paths,
-* identifiers,
-* API names,
-* important decisions,
-* constraints,
-* previous summaries.
-
-It removes stale information and keeps only context required for continuing the task.
-
-The prompt is read from `gptel-agent-harness-compact-prompt-file` (a constant).
-To customize, edit the `prompts/compact.txt` file directly.
-
----
-
-# Session Management
-
-Agent sessions are valuable — losing context after a crash or accidental buffer kill is costly. `gptel-agent-harness` auto-saves sessions to disk after every LLM response.
-
-## How It Works
-
-```
-LLM responds
-      |
-      v
-gptel-post-response-functions fires
-      |
-      v
-auto-save buffer + metadata to session dir
-```
-
-Each buffer gets a single timestamped session file on first save. Subsequent saves overwrite the same file with updated content and state.
-
-After the first save, the harness asynchronously generates a meaningful title from the user's first message (using the prompt in `prompts/title.txt`). The session file is then renamed from the generic `project_YYMMDDHHMMSS.md` format to `Generated-Title_YYMMDDHHMMSS.md`. When restored, the title is used as the buffer name (truncated to ~20 chars for mode-line space).
-
-## Session Directory
-
-### `gptel-agent-harness-session-dir`
-
-Where session files are stored.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-session-dir
-      (expand-file-name "gptel-sessions/" user-emacs-directory))
-```
-
-## Enable/Disable Auto-Save
-
-### `gptel-agent-harness-auto-save-session`
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-auto-save-session t)
-```
-
-Disable:
-
-```elisp
-(setq gptel-agent-harness-auto-save-session nil)
-```
-
-## Restoring Sessions
-
-Restore a specific session (with live preview):
-
-```
-M-x gptel-agent-harness-restore-session
-```
-
-Restore the most recent session:
-
-```
-M-x gptel-agent-harness-restore-latest-session
-```
-
-Restored sessions open in a fresh buffer (not visiting the session file) with all gptel state restored: model, backend, system prompt, temperature, max tokens, etc.
-
-### Live Preview
-
-When selecting a session file, a preview window appears on the right showing:
-
-* Session metadata (model, project directory, backend)
-* First 40 lines of content (configurable via `gptel-agent-harness-preview-lines`)
-
-The preview updates as you navigate candidates in the minibuffer.
-
----
-
-# Mode-Line Display
-
-The harness displays context usage ratio in the mode-line of gptel buffers:
-
-```
-[Ctx:45%/70%]
-```
-
-Color-coded by severity:
-
-* Green (`success`): Below 50%
-* Yellow (`warning`): 50–80%
-* Red (`error`): Above 80%
-
-### `gptel-agent-harness-show-context-ratio`
-
-Enable/disable mode-line display.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-show-context-ratio t)
-```
-
-Disable:
-
-```elisp
-(setq gptel-agent-harness-show-context-ratio nil)
-```
-
----
-
-# Compaction Configuration
-
-## Manual Compaction
-
-In addition to automatic compaction (triggered when context exceeds the threshold),
-you can manually compact the buffer at any time:
-
-```
-M-x gptel-agent-harness-commands-compact-buffer
-```
-
-This performs the same summarization as automatic compaction — extracting previous
-summaries, sending the buffer to the LLM, and rebuilding with the standard
-header/separator structure — but without interrupting an active request or
-replaying user messages.
-
-## `gptel-agent-harness-compact-header`
-
-Header inserted at the top of the buffer after compaction.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-compact-header
-      "**[Compacted Summary]**\n\n")
-```
-
-## `gptel-agent-harness-compact-separator`
-
-Separator inserted after the compacted summary.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-compact-separator
-      "\n\n---\n\n**[Context compacted]**\n\n---\n\n")
-```
-
-## `gptel-agent-harness-compact-resume-count`
-
-Number of recent user requests to replay after compaction.
-
-Default:
-
-```elisp
-(setq gptel-agent-harness-compact-resume-count 3)
-```
-
----
-
-# Token Calibration
-
-The context supervision uses a heuristic token estimate (~4 chars/token for Latin, ~2 chars/token for CJK). This can drift from actual tokenizer behavior.
-
-The estimate covers the full request payload: system prompt, all messages (user, assistant, tool results), tool call arguments, and tool definitions (schemas). It supports all gptel backends (OpenAI, Anthropic, Bedrock, Gemini, OpenAI Responses API).
-
-`gptel-agent-harness` self-calibrates by comparing its estimate to the actual **input** token count reported by the API after each response.
-
-```
-after LLM response
-       |
-       v
-read actual input tokens from gptel--token-usage
-       |
-       v
-calibration = actual_input / raw_estimate
-       |
-       v
-apply calibration to future estimates
-```
-
-The calibration factor is clamped to `[0.5, 3.0]` to avoid pathological values from measurement anomalies.
-
-No configuration needed — calibration happens automatically.
-
----
-
-# Improved Tools
-
-`gptel-agent-harness` includes enhanced versions of the `glob` and `grep` tools.
-
-## Enhanced Glob Tool
-
-The `glob` tool uses `git ls-files` inside git repositories for:
-
-* **Speed**: Significantly faster than recursive filesystem traversal.
-* **`.gitignore` awareness**: Respects your `.gitignore` rules automatically.
-* **Fallback**: Outside git repos, falls back to `tree` command.
-
-Configuration:
-
-```elisp
-;; No configuration needed — works automatically in git repos
-```
-
-## Enhanced Grep Tool
-
-The `grep` tool passes regex patterns via `-e` flag to `git grep`, avoiding misinterpretation of patterns starting with a dash.
-
-It automatically chooses the best available grepper:
-
-1. `git grep` (inside git repos)
-2. `ripgrep` (`rg`)
-3. Standard `grep`
-
-## Question Tool
-
-The `Question` tool allows the LLM to ask you questions during agentic execution — for clarification, preferences, or decisions — without stopping the session.
-
-### How It Works
-
-```
-LLM needs user input
-        |
-        v
-emits Question tool call
-        |
-        v
-completing-read prompt appears in Emacs minibuffer
-        |
-        v
-user selects option or types free text
-        |
-        v
-answer returned to LLM, execution continues
-```
-
-### Capabilities
-
-* **Single-select**: User picks one option via `completing-read`.
-* **Multi-select**: User picks multiple options via `completing-read-multiple` (set `multiple: true`).
-* **Free-text**: If no options are provided, prompts with `read-string`.
-* **Custom option**: By default, a "[Type your own answer]" choice is appended. Set `custom: false` to restrict to predefined options only.
-* **Batch questions**: Multiple questions can be asked in a single tool call.
-
-### Example Tool Call (from the LLM)
-
-```json
-{
-  "name": "Question",
-  "arguments": {
-    "questions": [
-      {
-        "question": "Which testing framework should I use?",
-        "options": ["pytest (Recommended)", "unittest", "nose2"]
-      },
-      {
-        "question": "What features should I include?",
-        "options": ["logging", "type hints", "docstrings"],
-        "multiple": true
-      },
-      {
-        "question": "What is the target Python version?"
-      }
-    ]
-  }
-}
-```
-
-### Encouraging Usage
-
-The LLM will only call this tool if it knows it's available and appropriate. To encourage proactive use, add guidance in your agent's system prompt:
-
-```text
-When requirements are ambiguous or multiple valid approaches exist, use the Question tool to ask the user before proceeding. Do not guess.
-```
-
----
-
-# Custom Agent Definition
-
-`gptel-agent-harness` provides `gptel-opencode-agent`, it reuses the system prompt from OpenCode, and is designed to provide the same behavior and capabilities as the original OpenCode agent within Emacs.
-
-## Usage
-
-Call the agent directly:
-
-```elisp
-M-x gptel-opencode-agent
-```
-
-Or from within gptel:
-
-```elisp
-(gptel-opencode-agent)
-```
-
-## Configuration
-
-### `gptel-agent-harness-agent-dirs`
-
-Directories containing agent definition files.
-
-Default (relative to the package installation directory):
-
-```elisp
-(setq gptel-agent-harness-agent-dirs
-      (list (expand-file-name
-             "agents"
-             (file-name-directory (locate-library "gptel-agent-harness")))))
-```
-
-Example:
-
-```elisp
-(setq gptel-agent-harness-agent-dirs
-      '("~/my-custom-agents"
-        (expand-file-name "agents" user-emacs-directory)))
-```
-
-Agent definition files in these directories are loaded when the harness is enabled.
-
----
-
-# Project Initialization
-
-`gptel-agent-harness-commands-initialize` creates or updates `AGENTS.md` for a project.
-
-It launches a dedicated gptel buffer with agent tools enabled and uses the
-initialize prompt from `prompts/initialize.txt` to guide the LLM in analyzing
-the repository and generating AGENTS.md.
-
-```
-M-x gptel-agent-harness-commands-initialize
-```
-
-When called interactively, it detects the current project root and prompts for
-confirmation.  You can provide extra instructions via the `$ARGUMENTS`
-placeholder in the initialize prompt.
-
----
-
-# Code Review
-
-`gptel-agent-harness-commands-review` performs an LLM-powered code review using
-the review prompt from `prompts/review.txt`.
-
-```
-M-x gptel-agent-harness-commands-review
-```
-
-### Arguments
-
-The command accepts an optional argument that determines what to review:
-
-* **Empty/nil**: Review all uncommitted changes (default)
-* **Commit hash**: Review a specific commit (40-char SHA or short hash)
-* **Branch name**: Compare current branch to the specified branch
-* **PR URL or number**: Review the pull request
-
-### Behavior
-
-* A dedicated `*gptel-agent-review*` buffer is created with full agent tooling.
-
-### Example
-
-```elisp
-;; Review uncommitted changes
-(gptel-agent-harness-commands-review nil)
-
-;; Review a specific commit
-(gptel-agent-harness-commands-review "abc1234")
-
-;; Review against a branch
-(gptel-agent-harness-commands-review "main")
-```
-
----
-
-# Conversation Summary
-
-`gptel-agent-harness-commands-summary` generates a concise PR-description-style
-summary of the current gptel buffer conversation.
-
-```
-M-x gptel-agent-harness-commands-summary
-```
-
-### How It Works
-
-The command uses `prompts/summary.txt` as the system prompt and sends the
-buffer's conversation history as user input via `gptel-request`. The resulting
-summary is inserted at the end of the buffer.
-
-```
-current gptel buffer
-        |
-        v
-capture conversation (full buffer or active region)
-        |
-        v
-gptel-request with summary.txt as system prompt
-        |
-        v
-insert summary at end of buffer
-```
-
-### Region Support
-
-When the region is active, only the selected text is sent as input instead of
-the full buffer content. This is useful for summarizing a specific portion of a
-long conversation.
-
----
-
-# Example Configuration
+## Example Configuration
 
 ```elisp
 (use-package gptel-agent-harness
@@ -731,9 +31,10 @@ long conversation.
     "rules/task-completion-rules.md"
     (file-name-directory
      (or (locate-library "gptel-agent-harness")
-         (error "gptel‑agent‑harness not found")))))
+         (error "gptel-agent-harness not found")))))
   (gptel-agent-harness-mode 1)
   (gptel-agent-update)
+  ;; Add custom model context windows
   (add-to-list 'gptel-agent-harness-context-windows
                '("openai/gpt-oss-120b" . 128000))
   ;; Optional keybindings
@@ -746,45 +47,119 @@ long conversation.
   (global-set-key (kbd "C-c g l") #'gptel-agent-harness-restore-latest-session))
 ```
 
----
+## Completion Supervision
 
-# File Structure
+When the agent attempts to stop, the harness injects a nudge message asking it to verify task completion. Configurable via:
+
+- `gptel-agent-harness-max-nudges` — Max consecutive nudges (default: 2). Resets on tool calls.
+- `gptel-agent-harness-nudge-message` — Message injected on premature stop.
+
+Only applies to top-level agentic sessions with tools enabled.
+
+## Context Supervision
+
+Estimates token usage before each LLM request. When usage exceeds the threshold, compaction is triggered automatically.
+
+- `gptel-agent-harness-context-trigger` — Ratio threshold (default: 0.70).
+- `gptel-agent-harness-context-windows` — Alist of model name patterns to context sizes. Unknown models fall back to 32768.
+
+### Token Calibration
+
+Self-calibrates by comparing heuristic estimates (~4 chars/token Latin, ~2 CJK) against actual API-reported input token counts. Clamped to [0.5, 3.0]. No configuration needed.
+
+### Mode-Line Display
+
+Shows `[Ctx:45%/70%]` color-coded: green (<50%), yellow (50–80%), red (>80%).
+
+- `gptel-agent-harness-show-context-ratio` — Toggle display (default: t).
+
+## Compaction
+
+### Automatic
+
+Triggered when context exceeds `gptel-agent-harness-context-trigger`. The harness:
+
+1. Removes the current round (last response + tool results)
+2. Extracts previous summary (if any) into `<previous-summary>` tags
+3. Sends buffer to LLM with compact prompt
+4. Rebuilds: header + new summary + separator + current round + recent requests
+5. Resumes with `gptel-send`
+
+### Manual
+
+```
+M-x gptel-agent-harness-commands-compact-buffer
+```
+
+Same summarization logic without interrupting active requests or replaying messages.
+
+### Custom Compaction Engine
+
+The harness uses its own `gptel-agent-harness-commands-compact` instead of
+`gptel-agent-compact` from `gptel-agent.el`:
+
+| | Built-in (`gptel-agent-compact`) | Harness version |
+|---|---|---|
+| Prompt delivery | Reads buffer up to point | Sends content as explicit string |
+| Buffer replacement | Narrowing + position tracking | `erase-buffer` + `insert` |
+| Transforms | Applies default transforms | None (`:transforms nil`) |
+| Error handling | Falls through on non-string | Handles all response types |
+
+The built-in's narrowing/position approach caused issues with repeated compaction (stale markers, partial replacement). The harness version is stateless: send string → receive string → replace buffer.
+
+### Configuration
+
+- `gptel-agent-harness-compact-header` — Header text (default: `"**[Compacted Summary]**\n\n"`).
+- `gptel-agent-harness-compact-separator` — Separator text (default: `"\n\n---\n\n**[Context compacted]**\n\n---\n\n"`).
+- `gptel-agent-harness-compact-resume-count` — Recent user messages to replay after compaction (default: 3).
+- Compaction prompt: edit `prompts/compact.txt` directly.
+
+## Session Management
+
+Auto-saves after each LLM response. Generates meaningful titles asynchronously.
+
+- `gptel-agent-harness-session-dir` — Storage directory (default: `~/.emacs.d/gptel-sessions/`).
+- `gptel-agent-harness-auto-save-session` — Toggle auto-save (default: t).
+- `M-x gptel-agent-harness-restore-session` — Restore with live preview.
+- `M-x gptel-agent-harness-restore-latest-session` — Restore most recent.
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `gptel-opencode-agent` | Start an OpenCode-like agent session |
+| `gptel-agent-harness-commands-initialize` | Create/update AGENTS.md for a project |
+| `gptel-agent-harness-commands-review` | Code review (uncommitted, commit, branch, or PR) |
+| `gptel-agent-harness-commands-summary` | Summarize conversation (full buffer or region) |
+| `gptel-agent-harness-commands-compact-buffer` | Manually compact the current buffer |
+| `gptel-agent-harness-restore-session` | Restore a saved session |
+| `gptel-agent-harness-restore-latest-session` | Restore the most recent session |
+
+## Enhanced Tools
+
+- **Glob**: Uses `git ls-files` for `.gitignore`-aware listing; falls back to `tree`.
+- **Grep**: Uses `git grep -e` for safe regex; falls back to `rg` or `grep`.
+- **Question**: LLM asks user via `completing-read` (single/multi-select, free-text). Encourage usage by adding guidance to your system prompt.
+
+## File Structure
 
 ```
 site-lisp/
-├── gptel-agent-harness.el          # Core: FSM supervision, context management, compaction, mode-line
-├── gptel-agent-harness-session.el  # Session: auto-save, title generation, preview, restore
-├── gptel-agent-harness-tools.el    # Enhanced glob/grep tools + Question tool
+├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
+├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
+├── gptel-agent-harness-tools.el    # Enhanced tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
-├── gptel-agent-harness-commands.el # Commands (initialize, review, summary, compact)
+├── gptel-agent-harness-commands.el # Commands (init, review, summary, compact)
 ├── gptel-agent-harness-test.el     # ERT test suite
-├── prompts/
-│   ├── compact.txt                 # Context compaction prompt
-│   ├── initialize.txt              # Project initialization prompt
-│   ├── review.txt                  # Code review prompt
-│   ├── summary.txt                 # Conversation summary prompt
-│   └── title.txt                   # Session title generation prompt
+├── prompts/                        # Prompt templates
 └── agents/                         # Agent definition files
 ```
 
----
+## Requirements
 
-# Requirements
+- Emacs 29.1+, gptel-agent >= 0.0.1, compat >= 30.1.0.0
+- Optional: `git`, `tree`, `ripgrep`
 
-* Emacs 29.1+
-* gptel-agent >= 0.0.1
-* compat >= 30.1.0.0
-
-Optional (for enhanced tools):
-
-* `git` — for fast glob/grep in git repositories
-* `tree` — fallback for glob outside git repos
-* `ripgrep` (`rg`) — alternative grepper
-
----
-
-# License
+## License
 
 GPL-3.0-or-later
-
----
