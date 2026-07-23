@@ -601,9 +601,9 @@ top-level-p) see them."
 (ert-deftest gptel-agent-harness-test-compaction ()
   "Test the full compaction flow across multiple compaction cycles.
 Covers:
- - 1st compaction: no prior summary, current round removed, resume layout correct
+ - 1st compaction: no prior summary, current round removed, resume correct
  - 2nd compaction: prior summary wrapped in <previous-summary> tags
- - 3rd compaction: separator and stale requests excluded from <previous-summary>"
+ - 3rd compaction: separator and stale requests excluded from summary"
   (let ((gptel-agent-harness-compact-header "**[Compacted Summary]**\n\n")
         (gptel-agent-harness-compact-separator "\n\n---\n\n")
         (gptel-agent-harness-verbose nil))
@@ -633,13 +633,17 @@ Covers:
                   (let ((round-start (point)))
                     (insert "Assistant first response.")
                     (put-text-property round-start (point) 'gptel 'response))
-                  (cl-letf (((symbol-function 'gptel-agent-compact)
-                             (lambda (_prompt callback)
-                               (setq captured-content (buffer-string))
-                               ;; Simulate: replace buffer with summary
+                  (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                             (lambda (callback)
+                               (setq captured-content
+                                     (buffer-substring-no-properties
+                                      (point-min) (point-max)))
+                               ;; Simulate: erase buffer and insert summary
                                (erase-buffer)
                                (insert "Summary after 1st compaction.\n")
-                               (when (functionp callback) (funcall callback))))
+                               ;; Simulate post-func being called with success
+                               (when (functionp callback)
+                                 (funcall callback nil))))
                             ((symbol-function 'gptel-send)
                              (lambda () (setq gptel-send-called t))))
                     (setq gptel-send-called nil)
@@ -659,20 +663,23 @@ Covers:
                       (should (string-match-p "req2" content))
                       (should gptel-send-called)))
 
-                  ;; === 2nd compaction: buffer has header + summary (no separator in summary region) ===
+                  ;; === 2nd compaction: buffer has header + summary + separator ===
                   ;; Simulate new response arrived after 1st compaction resume
                   (setq-local gptel-agent-harness--compacting-p nil)
                   (let ((round-start (point-max)))
                     (goto-char (point-max))
                     (insert "Assistant second response.")
                     (put-text-property round-start (point-max) 'gptel 'response))
-                  (cl-letf (((symbol-function 'gptel-agent-compact)
-                             (lambda (_prompt callback)
-                               (setq captured-content (buffer-string))
+                  (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                             (lambda (callback)
+                               (setq captured-content
+                                     (buffer-substring-no-properties
+                                      (point-min) (point-max)))
                                (erase-buffer)
                                ;; Simulate LLM echoing back <previous-summary> tags
                                (insert "<previous-summary>\nOld echoed stuff\n</previous-summary>\nSummary after 2nd compaction.\n")
-                               (when (functionp callback) (funcall callback))))
+                               (when (functionp callback)
+                                 (funcall callback nil))))
                             ((symbol-function 'gptel-send)
                              (lambda () (setq gptel-send-called t))))
                     (setq gptel-send-called nil)
@@ -699,12 +706,15 @@ Covers:
                     (goto-char (point-max))
                     (insert "Assistant third response.")
                     (put-text-property round-start (point-max) 'gptel 'response))
-                  (cl-letf (((symbol-function 'gptel-agent-compact)
-                             (lambda (_prompt callback)
-                               (setq captured-content (buffer-string))
+                  (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
+                             (lambda (callback)
+                               (setq captured-content
+                                     (buffer-substring-no-properties
+                                      (point-min) (point-max)))
                                (erase-buffer)
                                (insert "Summary after 3rd compaction.\n")
-                               (when (functionp callback) (funcall callback))))
+                               (when (functionp callback)
+                                 (funcall callback nil))))
                             ((symbol-function 'gptel-send)
                              (lambda () (setq gptel-send-called t))))
                     (setq gptel-send-called nil)
@@ -731,11 +741,12 @@ Covers:
 ;;;; Token Calibration Tests
 
 (ert-deftest gptel-agent-harness-test-calibration-updates-ratio ()
-  "Test calibration factor: normal update, clamping, and no-op."
+  "Test calibration factor: normal update, clamping, no-op, and compacting-p clearing."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
       (setq-local gptel-agent-harness--token-calibration 1.0)
       (setq-local gptel-agent-harness--last-raw-estimate 100)
+      (setq-local gptel-agent-harness--compacting-p nil)
       ;; Normal: 150 input / 100 estimate = 1.5
       (setq-local gptel--token-usage (list (list :input 150 :output 20) nil))
       (gptel-agent-harness--update-token-calibration)
@@ -757,7 +768,13 @@ Covers:
       (setq-local gptel-agent-harness--last-raw-estimate nil)
       (setq-local gptel--token-usage (list (list :input 120 :output 50) nil))
       (gptel-agent-harness--update-token-calibration)
-      (should (= gptel-agent-harness--token-calibration 1.5)))))
+      (should (= gptel-agent-harness--token-calibration 1.5))
+      ;; Clears compacting-p when set
+      (setq-local gptel-agent-harness--compacting-p t)
+      (setq-local gptel-agent-harness--last-raw-estimate 100)
+      (setq-local gptel--token-usage (list (list :input 150 :output 20) nil))
+      (gptel-agent-harness--update-token-calibration)
+      (should-not gptel-agent-harness--compacting-p))))
 
 (ert-deftest gptel-agent-harness-test-calibration-applied-to-ratio ()
   "Test that context ratio incorporates calibration factor."
@@ -1020,7 +1037,7 @@ Covers:
           (setq gptel-agent-harness--context-ratio 0.80)
           (setq gptel-agent-harness--compacting-p nil)
           (setq gptel-agent-harness--nudge-count 0))
-        (cl-letf (((symbol-function 'gptel-agent-compact)
+        (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
                    (lambda (&rest _) nil)))
           (setq orig-called nil)
           (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
@@ -1318,6 +1335,47 @@ Covers:
       (delete-file temp-file))))
 
 
+
+(ert-deftest gptel-agent-harness-test-commands-compact-callback ()
+  "Test compact callback handles success, error, abort, and unexpected types."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (setq-local gptel-mode t)
+      (insert "old content")
+      ;; Success: erases buffer and inserts response
+      (let ((info (list :buffer buf)))
+        (gptel-agent-harness-commands--compact-callback "new summary" info)
+        (should (equal (buffer-string) "new summary\n"))
+        (should-not (plist-get info :error)))
+      ;; API error (nil response): info already has :error set by gptel
+      (erase-buffer)
+      (insert "still here")
+      (let ((info (list :buffer buf :status "500 Internal" :error "server error")))
+        (gptel-agent-harness-commands--compact-callback nil info)
+        ;; Buffer unchanged on error
+        (should (equal (buffer-string) "still here")))
+      ;; Abort
+      (let ((info (list :buffer buf)))
+        (gptel-agent-harness-commands--compact-callback 'abort info)
+        (should (equal (plist-get info :error) "Compaction aborted")))
+      ;; Unexpected type (e.g., tool call)
+      (let ((info (list :buffer buf)))
+        (gptel-agent-harness-commands--compact-callback '(tool-call . stuff) info)
+        (should (string-match-p "unexpected" (plist-get info :error))))
+      ;; Reasoning block: ignored, no change
+      (erase-buffer)
+      (insert "unchanged")
+      (let ((info (list :buffer buf)))
+        (gptel-agent-harness-commands--compact-callback '(reasoning . "thinking...") info)
+        (should (equal (buffer-string) "unchanged"))
+        (should-not (plist-get info :error))))))
+
+(ert-deftest gptel-agent-harness-test-commands-compact-requires-gptel-mode ()
+  "Test compact function errors when not in a gptel buffer."
+  (with-temp-buffer
+    (setq-local gptel-mode nil)
+    (should-error (gptel-agent-harness-commands-compact)
+                  :type 'user-error)))
 
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
