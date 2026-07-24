@@ -1921,7 +1921,7 @@ Covers:
                 (should (equal result "full file content")))
               ;; Second get - dedup message
               (let ((result (gptel-agent-harness-cache--get key temp-file)))
-                (should (string-match-p "\\[Identical to previous result" result))
+                (should (string-match-p "\\[Cached: Read" result))
                 (should (string-match-p "17 chars" result))))
           (delete-file temp-file))))))
 
@@ -2066,7 +2066,7 @@ Covers:
               ;; Second call: dedup, no orig-fn
               (let ((r (gptel-agent-harness-cache--read-advice
                         fake-read temp-file 1 10)))
-                (should (string-match-p "\\[Identical" r))
+                (should (string-match-p "\\[Cached:" r))
                 (should (= call-count 1)))
               ;; With cache disabled: always calls orig-fn
               (let ((gptel-agent-harness-cache-enabled nil))
@@ -2092,7 +2092,7 @@ Covers:
           (should (= call-count 1)))
         ;; Second call: dedup
         (let ((r (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)))
-          (should (string-match-p "\\[Identical" r))
+          (should (string-match-p "\\[Cached:" r))
           (should (= call-count 1)))))))
 
 (ert-deftest gptel-agent-harness-test-cache-grep-advice ()
@@ -2114,7 +2114,7 @@ Covers:
         ;; Second call: dedup
         (let ((r (gptel-agent-harness-cache--grep-advice
                   fake-grep "match" "/tmp/file.el" nil nil)))
-          (should (string-match-p "\\[Identical" r))
+          (should (string-match-p "\\[Cached:" r))
           (should (= call-count 1)))))))
 
 (ert-deftest gptel-agent-harness-test-cache-skips-error-results ()
