@@ -112,7 +112,6 @@ The built-in's narrowing/position approach caused issues with repeated compactio
 
 - `gptel-agent-harness-compact-header` — Header text (default: `"**[Compacted Summary]**\n\n"`).
 - `gptel-agent-harness-compact-separator` — Separator text (default: `"\n\n---\n\n**[Context compacted]**\n\n---\n\n"`).
-- `gptel-agent-harness-compact-resume-count` — Recent user messages to replay after compaction (default: 3).
 - Compaction prompt: edit `prompts/compact.txt` directly.
 
 ## Session Management
