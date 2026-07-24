@@ -77,6 +77,7 @@ reports the error.  INFO is the request info plist."
 (declare-function gptel-agent-harness--read-compact-prompt "gptel-agent-harness")
 (declare-function gptel-agent-harness--strip-compact-prefix "gptel-agent-harness")
 (declare-function gptel-agent-harness--insert-compact-frame "gptel-agent-harness")
+(declare-function gptel-agent-harness-cache--reset-epoch "gptel-agent-harness-cache")
 
 (defun gptel-agent-harness-commands-compact (&optional post-func)
   "Compact the current buffer contents using the LLM.
@@ -150,6 +151,7 @@ without waiting for the automatic trigger."
                (message "Manual compaction failed: %s"
                         (plist-get info :error))
              ;; Success: add header + separator.
+             (gptel-agent-harness-cache--reset-epoch)
              (gptel-agent-harness--insert-compact-frame)
              (message "Buffer compacted successfully."))))))))
 
