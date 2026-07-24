@@ -187,13 +187,13 @@ Task States:
 Rules:
 - Update status in real time; don't batch completions
 - Mark `completed` only after the required work is actually done, including any required verification. Never based on intent.
-- Keep exactly one `in_progress` while work remains
 - If blocked or partial, keep it `in_progress` and add a follow-up todo describing the blocker
 - Preserve user-provided commands verbatim (flags, args, order)
 - Items should be specific and actionable; break large work into smaller steps
 
 How to use `TodoWrite`:
 - Always provide both `content` (imperative: "Run tests") and `activeForm` (present continuous: "Running tests")
+- Exactly ONE task must be in_progress at any time when you're executing tasks yourself
 - When delegating to subagents in parallel, multiple tasks can be in_progress simultaneously
 - Complete current tasks before starting new ones
 - Send entire todo list with each call (not just changed items)
