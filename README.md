@@ -8,6 +8,7 @@ An extension to `gptel-agent` that makes it behave like a reliable coding agent 
 - **Context supervision** — Monitors token usage, auto-compacts when exceeding threshold, self-calibrates estimation using API-reported counts, displays ratio in mode-line.
 - **Session management** — Auto-saves sessions after each response, generates titles, supports restore with live preview.
 - **Enhanced tools** — Fast `glob` via `git ls-files`, robust `grep` via `git grep -e`, and a `Question` tool for interactive user input during execution.
+- **Tool result caching** — Caches Glob/Grep/Read results with deduplication. Repeated identical tool calls within the same epoch return a short pointer instead of full content, saving tokens. Invalidated by file mtime, TTL, or write-through on Edit/Write/Insert.
 - **Custom agent** — `gptel-opencode-agent` with OpenCode-like behavior, loaded from `gptel-agent-harness-agent-dirs`.
 - **Commands** — Project initialization, code review, conversation summary, and manual compaction.
 
@@ -141,11 +142,24 @@ Auto-saves after each LLM response. Generates meaningful titles asynchronously.
 - **Grep**: Uses `git grep -e` for safe regex; falls back to `rg` or `grep`.
 - **Question**: LLM asks user via `completing-read` (single/multi-select, free-text). Encourage usage by adding guidance to your system prompt.
 
+## Tool Result Caching
+
+Caches Glob/Grep/Read results per session. Repeated identical calls within the same compaction epoch return a short dedup message instead of full content, saving tokens. Resets on compaction so the LLM gets fresh data in the new context.
+
+Invalidation: file mtime changes, TTL expiry (directories), and write-through on Edit/Write/Insert.
+
+- `gptel-agent-harness-cache-enabled` — Toggle (default: t).
+- `gptel-agent-harness-cache-ttl` — TTL for directory entries in seconds (default: 60).
+- `gptel-agent-harness-cache-max-entries` — Max entries per session (default: 200).
+- `M-x gptel-agent-harness-cache-stats` — Show hit/miss/dedup counts.
+- `M-x gptel-agent-harness-cache-clear` — Clear cache for current buffer.
+
 ## File Structure
 
 ```
 site-lisp/
 ├── gptel-agent-harness.el          # Core: FSM supervision, context, compaction
+├── gptel-agent-harness-cache.el    # Tool result caching with deduplication
 ├── gptel-agent-harness-session.el  # Session: auto-save, restore, preview
 ├── gptel-agent-harness-tools.el    # Enhanced tools + Question tool
 ├── gptel-agent-harness-agent.el    # Agent definition (gptel-opencode-agent)
