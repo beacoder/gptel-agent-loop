@@ -1813,5 +1813,379 @@ Covers:
   (gptel-agent-harness--dismiss-preview)
   (should-not (get-buffer "*gptel-session-preview*")))
 
+;;;; Cache Module Tests (gptel-agent-harness-cache)
+
+(ert-deftest gptel-agent-harness-test-cache-make-key-canonicalizes ()
+  "Test cache key canonicalizes paths but leaves non-paths alone."
+  (let ((default-directory "/home/user/project/"))
+    ;; Absolute path is preserved
+    (let ((key (gptel-agent-harness-cache--make-key 'read '("/tmp/foo.el" 1 50))))
+      (should (equal key '(read "/tmp/foo.el" 1 50))))
+    ;; Relative path starting with . is expanded
+    (let ((key (gptel-agent-harness-cache--make-key 'glob '("*.el" "./src" nil))))
+      (should (equal (nth 2 key) "/home/user/project/src")))
+    ;; Tilde path is expanded
+    (let ((key (gptel-agent-harness-cache--make-key 'read '("~/foo.el" nil nil))))
+      (should (string-prefix-p (expand-file-name "~") (nth 1 key))))
+    ;; Non-path strings (patterns) are left alone
+    (let ((key (gptel-agent-harness-cache--make-key 'grep '("defun.*foo" "/tmp" nil nil))))
+      (should (equal (nth 1 key) "defun.*foo")))
+    ;; nil values pass through
+    (let ((key (gptel-agent-harness-cache--make-key 'read '("/tmp/f.el" nil nil))))
+      (should (equal key '(read "/tmp/f.el" nil nil))))))
+
+(ert-deftest gptel-agent-harness-test-cache-store-and-lookup ()
+  "Test basic store and lookup operations."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((temp-file (make-temp-file "cache-test-" nil ".el" "content"))
+             (key '(read "/tmp/test.el" 1 10)))
+        (unwind-protect
+            (progn
+              ;; Store
+              (gptel-agent-harness-cache--store key "file content" temp-file)
+              ;; Lookup succeeds
+              (should (equal (gptel-agent-harness-cache--lookup key temp-file)
+                             "file content"))
+              ;; Lookup with wrong key fails
+              (should-not (gptel-agent-harness-cache--lookup
+                           '(read "/tmp/other.el" 1 10) temp-file)))
+          (delete-file temp-file))))))
+
+(ert-deftest gptel-agent-harness-test-cache-mtime-invalidation ()
+  "Test that file modification invalidates cache entry."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let ((temp-file (make-temp-file "cache-mtime-" nil ".el" "original")))
+        (unwind-protect
+            (let ((key '(read "test" 1 10)))
+              ;; Store with current mtime
+              (gptel-agent-harness-cache--store key "original content" temp-file)
+              (should (equal (gptel-agent-harness-cache--lookup key temp-file)
+                             "original content"))
+              ;; Modify the file (changes mtime)
+              (sleep-for 0.1)
+              (with-temp-file temp-file (insert "modified"))
+              ;; Lookup should now return nil (stale)
+              (should-not (gptel-agent-harness-cache--lookup key temp-file)))
+          (when (file-exists-p temp-file)
+            (delete-file temp-file)))))))
+
+(ert-deftest gptel-agent-harness-test-cache-ttl-invalidation ()
+  "Test that TTL expiry invalidates directory-based cache entries."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((gptel-agent-harness-cache-ttl 1)
+             (key '(glob "*.el" "/tmp" nil)))
+        ;; Store (path is a directory, so TTL is used)
+        (gptel-agent-harness-cache--store key "file1.el\nfile2.el" "/tmp")
+        (should (equal (gptel-agent-harness-cache--lookup key "/tmp")
+                       "file1.el\nfile2.el"))
+        ;; Wait for TTL to expire
+        (sleep-for 1.1)
+        ;; Should be invalidated
+        (should-not (gptel-agent-harness-cache--lookup key "/tmp"))))))
+
+(ert-deftest gptel-agent-harness-test-cache-deleted-file-invalidation ()
+  "Test that a deleted file invalidates its cache entry."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let ((temp-file (make-temp-file "cache-del-" nil ".el" "content")))
+        (let ((key '(read "test" nil nil)))
+          ;; Store
+          (gptel-agent-harness-cache--store key "file content" temp-file)
+          (should (equal (gptel-agent-harness-cache--lookup key temp-file)
+                         "file content"))
+          ;; Delete the file
+          (delete-file temp-file)
+          ;; Should be invalid
+          (should-not (gptel-agent-harness-cache--lookup key temp-file)))))))
+
+(ert-deftest gptel-agent-harness-test-cache-dedup-same-epoch ()
+  "Test deduplication returns short message on repeat access within epoch."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((temp-file (make-temp-file "cache-dedup-" nil ".el" "content"))
+             (key '(read "/tmp/f.el" 1 50))
+             (gptel-agent-harness-verbose nil))
+        (unwind-protect
+            (progn
+              ;; Store and first get - full result
+              (gptel-agent-harness-cache--store key "full file content" temp-file)
+              (let ((result (gptel-agent-harness-cache--get key temp-file)))
+                (should (equal result "full file content")))
+              ;; Second get - dedup message
+              (let ((result (gptel-agent-harness-cache--get key temp-file)))
+                (should (string-match-p "\\[Identical to previous result" result))
+                (should (string-match-p "17 chars" result))))
+          (delete-file temp-file))))))
+
+(ert-deftest gptel-agent-harness-test-cache-epoch-reset ()
+  "Test epoch reset clears seen set but preserves cache entries."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((temp-file (make-temp-file "cache-epoch-" nil ".el" "data"))
+             (key '(read "/tmp/f.el" 1 50))
+             (gptel-agent-harness-verbose nil))
+        (unwind-protect
+            (progn
+              ;; Store and access (marks as seen)
+              (gptel-agent-harness-cache--store key "the data" temp-file)
+              (gptel-agent-harness-cache--get key temp-file)
+              ;; Confirm it's in seen
+              (should (gethash key gptel-agent-harness-cache--seen))
+              ;; Reset epoch
+              (gptel-agent-harness-cache--reset-epoch)
+              ;; Seen is cleared
+              (should-not (gethash key gptel-agent-harness-cache--seen))
+              ;; Cache entry persists - next get returns full result
+              (let ((result (gptel-agent-harness-cache--get key temp-file)))
+                (should (equal result "the data"))))
+          (delete-file temp-file))))))
+
+(ert-deftest gptel-agent-harness-test-cache-write-through-invalidation ()
+  "Test that editing a file invalidates related cache entries."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((dir "/tmp/project/src/")
+             (file (concat dir "foo.el"))
+             (key-read (list 'read file 1 50))
+             (key-grep (list 'grep "pattern" dir nil nil))
+             (key-unrelated (list 'read "/tmp/other/bar.el" 1 10)))
+        ;; Populate cache
+        (puthash key-read
+                 (list :result "foo content" :mtime nil :timestamp (float-time))
+                 gptel-agent-harness-cache--table)
+        (puthash key-grep
+                 (list :result "grep results" :mtime nil :timestamp (float-time))
+                 gptel-agent-harness-cache--table)
+        (puthash key-unrelated
+                 (list :result "other content" :mtime nil :timestamp (float-time))
+                 gptel-agent-harness-cache--table)
+        ;; Mark as seen
+        (puthash key-read t gptel-agent-harness-cache--seen)
+        (puthash key-grep t gptel-agent-harness-cache--seen)
+        (puthash key-unrelated t gptel-agent-harness-cache--seen)
+        ;; Invalidate
+        (gptel-agent-harness-cache--invalidate-path file)
+        ;; foo.el: invalidated (exact match)
+        (should-not (gethash key-read gptel-agent-harness-cache--table))
+        (should-not (gethash key-read gptel-agent-harness-cache--seen))
+        ;; grep on parent dir: invalidated (dir prefix match)
+        (should-not (gethash key-grep gptel-agent-harness-cache--table))
+        (should-not (gethash key-grep gptel-agent-harness-cache--seen))
+        ;; Unrelated: preserved
+        (should (gethash key-unrelated gptel-agent-harness-cache--table))
+        (should (gethash key-unrelated gptel-agent-harness-cache--seen))))))
+
+(ert-deftest gptel-agent-harness-test-cache-cacheable-p ()
+  "Test `--cacheable-p' filters empty and error results."
+  (should (gptel-agent-harness-cache--cacheable-p "file content here"))
+  (should (gptel-agent-harness-cache--cacheable-p "1:match\n2:match"))
+  (should-not (gptel-agent-harness-cache--cacheable-p ""))
+  (should-not (gptel-agent-harness-cache--cacheable-p nil))
+  (should-not (gptel-agent-harness-cache--cacheable-p "Error: File not readable"))
+  (should-not (gptel-agent-harness-cache--cacheable-p
+               "Glob failed with exit code 1\n.STDOUT:\n\n")))
+
+(ert-deftest gptel-agent-harness-test-cache-eviction ()
+  "Test oldest entry is evicted when cache reaches max capacity."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let ((gptel-agent-harness-cache-max-entries 3))
+        (gptel-agent-harness-cache--store '(a) "result-a" "/tmp")
+        (sleep-for 0.01)
+        (gptel-agent-harness-cache--store '(b) "result-b" "/tmp")
+        (sleep-for 0.01)
+        (gptel-agent-harness-cache--store '(c) "result-c" "/tmp")
+        (should (= (hash-table-count gptel-agent-harness-cache--table) 3))
+        ;; Add one more - oldest (a) should be evicted
+        (sleep-for 0.01)
+        (gptel-agent-harness-cache--store '(d) "result-d" "/tmp")
+        (should (= (hash-table-count gptel-agent-harness-cache--table) 3))
+        (should-not (gethash '(a) gptel-agent-harness-cache--table))
+        (should (gethash '(b) gptel-agent-harness-cache--table))
+        (should (gethash '(c) gptel-agent-harness-cache--table))
+        (should (gethash '(d) gptel-agent-harness-cache--table))))))
+
+(ert-deftest gptel-agent-harness-test-cache-stats ()
+  "Test cache statistics are tracked correctly."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((gptel-agent-harness-verbose nil)
+             (temp-file (make-temp-file "cache-stats-" nil ".el" "x"))
+             (key '(read "/tmp/stats.el" 1 10)))
+        (unwind-protect
+            (progn
+              ;; Reset stats
+              (dolist (k '(:hits :misses :dedups :invalidations))
+                (puthash k 0 gptel-agent-harness-cache--stats))
+              ;; Store + first get = hit
+              (gptel-agent-harness-cache--store key "content" temp-file)
+              (gptel-agent-harness-cache--get key temp-file)
+              (should (= (gethash :hits gptel-agent-harness-cache--stats) 1))
+              ;; Second get = dedup
+              (gptel-agent-harness-cache--get key temp-file)
+              (should (= (gethash :dedups gptel-agent-harness-cache--stats) 1))
+              ;; Modify file = invalidation on next lookup
+              (sleep-for 0.1)
+              (with-temp-file temp-file (insert "changed"))
+              (gptel-agent-harness-cache--lookup key temp-file)
+              (should (= (gethash :invalidations gptel-agent-harness-cache--stats) 1)))
+          (when (file-exists-p temp-file)
+            (delete-file temp-file)))))))
+
+(ert-deftest gptel-agent-harness-test-cache-read-advice ()
+  "Test read advice caches, deduplicates, and skips when disabled."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((gptel-agent-harness-cache-enabled t)
+             (gptel-agent-harness-verbose nil)
+             (call-count 0)
+             (temp-file (make-temp-file "cache-read-" nil ".el" "line1\nline2\n"))
+             (fake-read (lambda (filename &optional start end)
+                          (cl-incf call-count)
+                          (format "content of %s" filename))))
+        (unwind-protect
+            (progn
+              ;; First call: miss, invokes orig-fn
+              (let ((r (gptel-agent-harness-cache--read-advice
+                        fake-read temp-file 1 10)))
+                (should (string-match-p "content of" r))
+                (should (= call-count 1)))
+              ;; Second call: dedup, no orig-fn
+              (let ((r (gptel-agent-harness-cache--read-advice
+                        fake-read temp-file 1 10)))
+                (should (string-match-p "\\[Identical" r))
+                (should (= call-count 1)))
+              ;; With cache disabled: always calls orig-fn
+              (let ((gptel-agent-harness-cache-enabled nil))
+                (gptel-agent-harness-cache--read-advice fake-read temp-file 1 10)
+                (should (= call-count 2))))
+          (when (file-exists-p temp-file)
+            (delete-file temp-file)))))))
+
+(ert-deftest gptel-agent-harness-test-cache-glob-advice ()
+  "Test glob advice caches and deduplicates."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((gptel-agent-harness-cache-enabled t)
+             (gptel-agent-harness-verbose nil)
+             (call-count 0)
+             (fake-glob (lambda (pattern &optional path depth)
+                          (cl-incf call-count)
+                          "/tmp/a.el\n/tmp/b.el\n")))
+        ;; First call
+        (let ((r (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)))
+          (should (string-match-p "a\\.el" r))
+          (should (= call-count 1)))
+        ;; Second call: dedup
+        (let ((r (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)))
+          (should (string-match-p "\\[Identical" r))
+          (should (= call-count 1)))))))
+
+(ert-deftest gptel-agent-harness-test-cache-grep-advice ()
+  "Test grep advice caches and deduplicates."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((gptel-agent-harness-cache-enabled t)
+             (gptel-agent-harness-verbose nil)
+             (call-count 0)
+             (fake-grep (lambda (regex path &optional glob ctx)
+                          (cl-incf call-count)
+                          "5:match here\n")))
+        ;; First call
+        (let ((r (gptel-agent-harness-cache--grep-advice
+                  fake-grep "match" "/tmp/file.el" nil nil)))
+          (should (string-match-p "match here" r))
+          (should (= call-count 1)))
+        ;; Second call: dedup
+        (let ((r (gptel-agent-harness-cache--grep-advice
+                  fake-grep "match" "/tmp/file.el" nil nil)))
+          (should (string-match-p "\\[Identical" r))
+          (should (= call-count 1)))))))
+
+(ert-deftest gptel-agent-harness-test-cache-skips-error-results ()
+  "Test that error results from tool calls are not cached."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (let* ((gptel-agent-harness-cache-enabled t)
+             (gptel-agent-harness-verbose nil)
+             (call-count 0)
+             (fake-glob (lambda (pattern &optional path depth)
+                          (cl-incf call-count)
+                          "Glob failed with exit code 1\n.STDOUT:\n\n")))
+        ;; First call: error result, not cached
+        (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)
+        (should (= call-count 1))
+        ;; Second call: still invokes orig-fn (not cached)
+        (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)
+        (should (= call-count 2))))))
+
+(ert-deftest gptel-agent-harness-test-cache-clear ()
+  "Test `cache-clear' empties both tables."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (gptel-agent-harness-cache--ensure-tables)
+      (puthash '(test) '(:result "x" :timestamp 0) gptel-agent-harness-cache--table)
+      (puthash '(test) t gptel-agent-harness-cache--seen)
+      (should (= (hash-table-count gptel-agent-harness-cache--table) 1))
+      (should (= (hash-table-count gptel-agent-harness-cache--seen) 1))
+      (gptel-agent-harness-cache-clear)
+      (should (= (hash-table-count gptel-agent-harness-cache--table) 0))
+      (should (= (hash-table-count gptel-agent-harness-cache--seen) 0)))))
+
+(ert-deftest gptel-agent-harness-test-cache-setup-teardown ()
+  "Test setup creates tables, teardown nils them."
+  (gptel-agent-harness-test--with-buffer buf
+    (with-current-buffer buf
+      (should-not gptel-agent-harness-cache--table)
+      (should-not gptel-agent-harness-cache--seen)
+      (gptel-agent-harness-cache--setup)
+      (should (hash-table-p gptel-agent-harness-cache--table))
+      (should (hash-table-p gptel-agent-harness-cache--seen))
+      (gptel-agent-harness-cache--teardown)
+      (should-not gptel-agent-harness-cache--table)
+      (should-not gptel-agent-harness-cache--seen))))
+
+(ert-deftest gptel-agent-harness-test-cache-enable-disable ()
+  "Test enable adds advice, disable removes it."
+  (unwind-protect
+      (progn
+        (gptel-agent-harness-cache-enable)
+        (should (advice-member-p #'gptel-agent-harness-cache--read-advice
+                                 'gptel-agent--read-file-lines))
+        (should (advice-member-p #'gptel-agent-harness-cache--glob-advice
+                                 'gptel-agent--glob))
+        (should (advice-member-p #'gptel-agent-harness-cache--grep-advice
+                                 'gptel-agent--grep))
+        (should (advice-member-p #'gptel-agent-harness-cache--after-edit
+                                 'gptel-agent--edit-files))
+        (should (advice-member-p #'gptel-agent-harness-cache--after-write
+                                 'gptel-agent--write-file))
+        (should (advice-member-p #'gptel-agent-harness-cache--after-insert
+                                 'gptel-agent--insert-in-file))
+        (gptel-agent-harness-cache-disable)
+        (should-not (advice-member-p #'gptel-agent-harness-cache--read-advice
+                                     'gptel-agent--read-file-lines))
+        (should-not (advice-member-p #'gptel-agent-harness-cache--glob-advice
+                                     'gptel-agent--glob))
+        (should-not (advice-member-p #'gptel-agent-harness-cache--grep-advice
+                                     'gptel-agent--grep)))
+    (gptel-agent-harness-cache-disable)))
+
 (provide 'gptel-agent-harness-test)
 ;;; gptel-agent-harness-test.el ends here
