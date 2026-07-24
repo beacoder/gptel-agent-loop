@@ -970,19 +970,19 @@ Covers:
                     :messages (vector (list :role "user" :content "hi"))))
              (orig-called nil))
         ;; 1) Terminal state → nudge path → orig-fn called with WAIT
-        (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+        (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'DONE)
           (should (eq orig-called 'WAIT))
           (should (= (gptel-agent-harness--get-nudges fsm) 1)))
         ;; 2) WAIT state (no compaction needed) → pass through
         (setq orig-called nil)
-        (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+        (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'WAIT)
           (should (eq orig-called 'WAIT)))
         ;; 3) TOOL state (top-level) → pass through + reset nudges
         (with-current-buffer buf (setq gptel-agent-harness--nudge-count 5))
         (setq orig-called nil)
-        (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+        (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'TOOL)
           (should (eq orig-called 'TOOL))
           (should (= (gptel-agent-harness--get-nudges fsm) 0)))
@@ -991,7 +991,7 @@ Covers:
                                 :handlers gptel-send--handlers
                                 :system "sys"
                                 :messages (vector (list :role "user" :content "hi"))))
-               (orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+               (orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (setq orig-called nil)
           (gptel-agent-harness--transition-advice orig-fn non-agent-fsm 'DONE)
           (should (eq orig-called 'DONE)))
@@ -999,12 +999,12 @@ Covers:
         (with-current-buffer buf
           (setq gptel-agent-harness--nudge-count gptel-agent-harness-max-nudges))
         (setq orig-called nil)
-        (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+        (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'ERRS)
           (should (eq orig-called 'ERRS)))
         ;; 6) Default path (non-terminal, non-TOOL/TPRE) → pass through
         (setq orig-called nil)
-        (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+        (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'TYPE)
           (should (eq orig-called 'TYPE)))
         ;; 7) WAIT with compaction needed → compact returns nil → fallback
@@ -1015,7 +1015,7 @@ Covers:
         (cl-letf (((symbol-function 'gptel-agent-harness-commands-compact)
                    (lambda (&rest _) nil)))
           (setq orig-called nil)
-          (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+          (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
             (gptel-agent-harness--transition-advice orig-fn fsm 'WAIT)
             (should (eq orig-called 'WAIT))))
         ;; 8) Terminal state with compacting-p set → let FSM die, no nudge
@@ -1023,7 +1023,7 @@ Covers:
           (setq gptel-agent-harness--compacting-p t)
           (setq gptel-agent-harness--nudge-count 0))
         (setq orig-called nil)
-        (let ((orig-fn (lambda (&optional m ns) (setq orig-called ns))))
+        (let ((orig-fn (lambda (&optional _m ns) (setq orig-called ns))))
           (gptel-agent-harness--transition-advice orig-fn fsm 'DONE)
           ;; Should pass through with DONE, not redirect to WAIT
           (should (eq orig-called 'DONE))
@@ -1309,7 +1309,7 @@ Covers:
          (captured-content nil))
     (unwind-protect
         (cl-letf (((symbol-function 'gptel-request)
-                   (lambda (content &rest args)
+                   (lambda (content &rest _args)
                      (setq captured-content content)))
                   ((symbol-function 'gptel--update-status)
                    (lambda (&rest _) nil)))
@@ -2041,7 +2041,7 @@ Covers:
              (gptel-agent-harness-verbose nil)
              (call-count 0)
              (temp-file (make-temp-file "cache-read-" nil ".el" "line1\nline2\n"))
-             (fake-read (lambda (filename &optional start end)
+             (fake-read (lambda (filename &optional _start _end)
                           (cl-incf call-count)
                           (format "content of %s" filename))))
         (unwind-protect
@@ -2071,7 +2071,7 @@ Covers:
       (let* ((gptel-agent-harness-cache-enabled t)
              (gptel-agent-harness-verbose nil)
              (call-count 0)
-             (fake-glob (lambda (pattern &optional path depth)
+             (fake-glob (lambda (_pattern &optional _path _depth)
                           (cl-incf call-count)
                           "/tmp/a.el\n/tmp/b.el\n")))
         ;; First call
@@ -2091,7 +2091,7 @@ Covers:
       (let* ((gptel-agent-harness-cache-enabled t)
              (gptel-agent-harness-verbose nil)
              (call-count 0)
-             (fake-grep (lambda (regex path &optional glob ctx)
+             (fake-grep (lambda (_regex _path &optional _glob _ctx)
                           (cl-incf call-count)
                           "5:match here\n")))
         ;; First call
@@ -2113,7 +2113,7 @@ Covers:
       (let* ((gptel-agent-harness-cache-enabled t)
              (gptel-agent-harness-verbose nil)
              (call-count 0)
-             (fake-glob (lambda (pattern &optional path depth)
+             (fake-glob (lambda (_pattern &optional _path _depth)
                           (cl-incf call-count)
                           "Glob failed with exit code 1\n.STDOUT:\n\n")))
         ;; First call: error result, not cached
