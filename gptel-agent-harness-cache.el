@@ -193,6 +193,30 @@ Returns the cached result string, or nil if missing/stale."
                  :timestamp (float-time))
            gptel-agent-harness-cache--table))
 
+(defun gptel-agent-harness-cache--format-dedup (key result)
+  "Format a dedup message for KEY describing the cached RESULT."
+  (let* ((func-name (car key))
+         (args (cdr key))
+         (desc (pcase func-name
+                 ('read
+                  (let ((file (abbreviate-file-name (or (nth 0 args) "")))
+                        (start (nth 1 args))
+                        (end (nth 2 args)))
+                    (if (and start end)
+                        (format "Read \"%s\" lines %s-%s" file start end)
+                      (format "Read \"%s\"" file))))
+                 ('glob
+                  (let ((pattern (nth 0 args))
+                        (path (abbreviate-file-name (or (nth 1 args) "."))))
+                    (format "Glob \"%s\" in %s" pattern path)))
+                 ('grep
+                  (let ((regex (nth 0 args))
+                        (path (abbreviate-file-name (or (nth 1 args) ""))))
+                    (format "Grep \"%s\" in %s" regex path)))
+                 (_ (format "%s" func-name)))))
+    (format "[Cached: %s (%d chars) — same as earlier call, see above]"
+            desc (length result))))
+
 (defun gptel-agent-harness-cache--get (key path)
   "Return tool result for KEY with PATH validation, deduplicating if seen.
 Returns full result on first access, short message on repeats.
@@ -206,9 +230,7 @@ Returns nil on cache miss."
           (when gptel-agent-harness-verbose
             (message "gptel-agent-harness-cache: dedup hit (%d chars saved)"
                      (length result)))
-          (format "[Identical to previous result (%d chars). \
-Use the information already available in context.]"
-                  (length result)))
+          (gptel-agent-harness-cache--format-dedup key result))
       ;; First time this epoch — return full, mark seen
       (puthash key t gptel-agent-harness-cache--seen)
       (gptel-agent-harness-cache--inc-stat :hits)
