@@ -1209,7 +1209,16 @@ Covers:
                      "Summarize this.")))
     (delete-file temp-file))
   (let ((gptel-agent-harness-commands--summary-prompt-file "/nonexistent/summary.txt"))
-    (should-error (gptel-agent-harness-commands--read-summary-prompt))))
+    (should-error (gptel-agent-harness-commands--read-summary-prompt)))
+  ;; Compact prompt
+  (let ((temp-file (make-temp-file "compact-" nil ".txt" "compact instructions")))
+    (unwind-protect
+        (let ((gptel-agent-harness-compact-prompt-file temp-file))
+          (should (equal (gptel-agent-harness--read-compact-prompt)
+                         "compact instructions")))
+      (delete-file temp-file)))
+  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
+    (should-error (gptel-agent-harness--read-compact-prompt))))
 
 (ert-deftest gptel-agent-harness-test-substitute-placeholders ()
   "Test `gptel-agent-harness-commands--substitute-placeholders' replaces ${path} and $ARGUMENTS."
@@ -1442,10 +1451,11 @@ Covers:
           (should (numberp gptel-agent-harness--last-raw-estimate))
           (should (> gptel-agent-harness--last-raw-estimate 0)))))))
 
-(ert-deftest gptel-agent-harness-test-update-context-ratio-skips-non-top-level ()
-  "Test `--update-context-ratio' is a no-op for non-top-level FSMs."
+(ert-deftest gptel-agent-harness-test-update-context-ratio-skip-cases ()
+  "Test `--update-context-ratio' is a no-op for non-top-level FSMs and buffer data."
   (let ((gptel-agent-harness-verbose nil)
         (gptel-model "unknown-model"))
+    ;; Non-top-level FSM
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
         (setq-local gptel-agent-harness--context-ratio nil)
@@ -1457,15 +1467,11 @@ Covers:
         (gptel-agent-harness--update-context-ratio fsm)
         (with-current-buffer buf
           (should-not gptel-agent-harness--context-ratio)
-          (should-not gptel-agent-harness--last-raw-estimate))))))
-
-(ert-deftest gptel-agent-harness-test-update-context-ratio-skips-buffer-data ()
-  "Test `--update-context-ratio' is a no-op when :data is a buffer."
-  (let ((gptel-agent-harness-verbose nil))
+          (should-not gptel-agent-harness--last-raw-estimate))))
+    ;; :data is a buffer (during assembly)
     (gptel-agent-harness-test--with-buffer buf
       (with-current-buffer buf
         (setq-local gptel-agent-harness--context-ratio nil))
-      ;; Simulate the case where :data is still a buffer (during assembly)
       (let ((fsm (gptel-make-fsm
                   :info (list :buffer buf :data buf)
                   :handlers gptel-send--handlers)))
@@ -1475,18 +1481,16 @@ Covers:
 
 ;;;; With-FSM-Buffer Dead Buffer Tests
 
-(ert-deftest gptel-agent-harness-test-with-fsm-buffer-dead ()
-  "Test `--with-fsm-buffer' returns nil when buffer is killed."
+(ert-deftest gptel-agent-harness-test-with-fsm-buffer-edge-cases ()
+  "Test `--with-fsm-buffer' returns nil for dead or nil buffers."
+  ;; Dead buffer
   (let* ((buf (generate-new-buffer " *dead-test*"))
          (fsm (gptel-agent-harness-test--make-fsm buf
                 :system "sys" :messages (vector))))
     (kill-buffer buf)
-    ;; Should return nil without error
     (should-not (gptel-agent-harness--with-fsm-buffer fsm
-                  (error "Should not execute")))))
-
-(ert-deftest gptel-agent-harness-test-with-fsm-buffer-nil ()
-  "Test `--with-fsm-buffer' returns nil when buffer is nil."
+                  (error "Should not execute"))))
+  ;; Nil buffer
   (let ((fsm (gptel-make-fsm
               :info (list :buffer nil :data nil)
               :handlers 'test)))
@@ -1495,13 +1499,10 @@ Covers:
 
 ;;;; Glob Tool Tests
 
-(ert-deftest gptel-agent-harness-test-glob-empty-pattern-errors ()
-  "Test glob with empty pattern signals an error."
+(ert-deftest gptel-agent-harness-test-glob-error-cases ()
+  "Test glob signals errors for empty pattern and non-readable path."
   (should-error (gptel-agent-harness-tools--glob "")
-                :type 'error))
-
-(ert-deftest gptel-agent-harness-test-glob-nonexistent-path-errors ()
-  "Test glob with non-readable path signals an error."
+                :type 'error)
   (should-error (gptel-agent-harness-tools--glob "*.txt" "/nonexistent/path/xyz")
                 :type 'error))
 
@@ -1591,15 +1592,14 @@ Covers:
 
 ;;;; Compact Buffer Command Tests
 
-(ert-deftest gptel-agent-harness-test-compact-buffer-requires-gptel-mode ()
-  "Test compact-buffer errors when not in gptel buffer."
+(ert-deftest gptel-agent-harness-test-compact-buffer-preconditions ()
+  "Test compact-buffer errors for missing gptel-mode and in-progress compaction."
+  ;; Not in gptel buffer
   (with-temp-buffer
     (setq-local gptel-mode nil)
     (should-error (gptel-agent-harness-commands-compact-buffer)
-                  :type 'user-error)))
-
-(ert-deftest gptel-agent-harness-test-compact-buffer-errors-when-already-compacting ()
-  "Test compact-buffer errors when compaction is already in progress."
+                  :type 'user-error))
+  ;; Already compacting
   (with-temp-buffer
     (setq-local gptel-mode t)
     (setq-local gptel-agent-harness--compacting-p t)
@@ -1745,18 +1745,6 @@ Covers:
         (kill-buffer (current-buffer))))))
 
 ;;;; Read Compact Prompt Tests
-
-(ert-deftest gptel-agent-harness-test-read-compact-prompt ()
-  "Test `--read-compact-prompt' reads file content or errors."
-  (let ((temp-file (make-temp-file "compact-" nil ".txt" "compact instructions")))
-    (unwind-protect
-        (let ((gptel-agent-harness-compact-prompt-file temp-file))
-          (should (equal (gptel-agent-harness--read-compact-prompt)
-                         "compact instructions")))
-      (delete-file temp-file)))
-  ;; Missing file → error
-  (let ((gptel-agent-harness-compact-prompt-file "/nonexistent/compact.txt"))
-    (should-error (gptel-agent-harness--read-compact-prompt))))
 
 ;;;; Preview Session Tests
 
@@ -2135,28 +2123,25 @@ Covers:
         (gptel-agent-harness-cache--glob-advice fake-glob "*.el" "/tmp" nil)
         (should (= call-count 2))))))
 
-(ert-deftest gptel-agent-harness-test-cache-clear ()
-  "Test `cache-clear' empties both tables."
+(ert-deftest gptel-agent-harness-test-cache-lifecycle ()
+  "Test cache setup creates tables, clear empties them, teardown nils them."
   (gptel-agent-harness-test--with-buffer buf
     (with-current-buffer buf
-      (gptel-agent-harness-cache--ensure-tables)
+      ;; Setup
+      (should-not gptel-agent-harness-cache--table)
+      (should-not gptel-agent-harness-cache--seen)
+      (gptel-agent-harness-cache--setup)
+      (should (hash-table-p gptel-agent-harness-cache--table))
+      (should (hash-table-p gptel-agent-harness-cache--seen))
+      ;; Populate and clear
       (puthash '(test) '(:result "x" :timestamp 0) gptel-agent-harness-cache--table)
       (puthash '(test) t gptel-agent-harness-cache--seen)
       (should (= (hash-table-count gptel-agent-harness-cache--table) 1))
       (should (= (hash-table-count gptel-agent-harness-cache--seen) 1))
       (gptel-agent-harness-cache-clear)
       (should (= (hash-table-count gptel-agent-harness-cache--table) 0))
-      (should (= (hash-table-count gptel-agent-harness-cache--seen) 0)))))
-
-(ert-deftest gptel-agent-harness-test-cache-setup-teardown ()
-  "Test setup creates tables, teardown nils them."
-  (gptel-agent-harness-test--with-buffer buf
-    (with-current-buffer buf
-      (should-not gptel-agent-harness-cache--table)
-      (should-not gptel-agent-harness-cache--seen)
-      (gptel-agent-harness-cache--setup)
-      (should (hash-table-p gptel-agent-harness-cache--table))
-      (should (hash-table-p gptel-agent-harness-cache--seen))
+      (should (= (hash-table-count gptel-agent-harness-cache--seen) 0))
+      ;; Teardown
       (gptel-agent-harness-cache--teardown)
       (should-not gptel-agent-harness-cache--table)
       (should-not gptel-agent-harness-cache--seen))))
